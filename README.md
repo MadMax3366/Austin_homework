@@ -16,6 +16,7 @@
 - [宽体架构状态图](./docs/architecture-status.html)：可独立打开的五层架构 HTML。
 - [DEMO.md](./DEMO.md)：面试演示脚本和主动破坏测试。
 - [TESTING.md](./TESTING.md)：自动化覆盖与对抗测试矩阵。
+- [Linux SSD + Mac SSH 隧道部署](./deploy/README.md)：常驻服务和浏览器访问方式。
 
 ## 已实现内容
 
