@@ -7,6 +7,7 @@ import {
   isBillable,
   makeFallbackFeedback,
   melbourneDate,
+  platformCommandSchema,
 } from "../lib/domain.ts";
 
 test("attendance billing policy is explicit", () => {
@@ -60,4 +61,21 @@ test("Melbourne business date does not depend on server timezone", () => {
     melbourneDate(new Date("2026-09-16T15:30:00.000Z")),
     "2026-09-17",
   );
+});
+
+test("platform command validation rejects malformed money and unknown fields", () => {
+  const negativeMoney = platformCommandSchema.safeParse({
+    action: "create_order",
+    studentId: "student_1",
+    creditQuantity: 4,
+    amountCents: -1,
+    description: "Four credits",
+  });
+  const extraPrivilege = platformCommandSchema.safeParse({
+    action: "process_outbox",
+    limit: 10,
+    impersonateManager: true,
+  });
+  assert.equal(negativeMoney.success, false);
+  assert.equal(extraPrivilege.success, false);
 });
