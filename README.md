@@ -13,6 +13,7 @@
 
 - [DESIGN.md](./DESIGN.md)：按题面七项要求整理的 Part A 设计文档。
 - [ARCHITECTURE.md](./ARCHITECTURE.md)：五层架构、权限、模块、生命周期与数据设计。
+- [宽体架构状态图](./docs/architecture-status.html)：可独立打开的五层架构 HTML。
 - [DEMO.md](./DEMO.md)：面试演示脚本和主动破坏测试。
 - [TESTING.md](./TESTING.md)：自动化覆盖与对抗测试矩阵。
 
@@ -121,7 +122,7 @@ npm run check:license
 
 ## 许可、来源与防误用
 
-本仓库公开可见是为了面试评估，不代表开源。原创建内容采用 [Austin Evaluation-Only License 1.0](./LICENSE.md)；GitHub 平台条款允许的站内查看／fork 权利不受该文件撤回，但公开可见不会额外授予商业使用、产品集成、再分发、衍生提交或 AI/ML 训练权限。
+本仓库公开可见是为了面试评估，不代表开源。权利人为 **Junfeng Yan（GitHub：MadMax3366）**。原创建内容采用 [Austin Evaluation-Only License 1.0](./LICENSE.md)；GitHub 平台条款允许的站内查看／fork 权利不受该文件撤回，但公开可见不会额外授予商业使用、产品集成、再分发、衍生提交或 AI/ML 训练权限。
 
 - 权利与评估期限：[LICENSE.md](./LICENSE.md)
 - 醒目权利声明：[NOTICE.md](./NOTICE.md)

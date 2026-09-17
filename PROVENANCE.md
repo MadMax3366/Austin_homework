@@ -4,9 +4,11 @@
 
 - Artifact ID: `AUS-HOMEWORK-MADMAX3366-2026-09`
 - Canonical repository: `https://github.com/MadMax3366/Austin_homework`
-- Canonical author identity: GitHub account `MadMax3366`
+- Legal author identity: Junfeng Yan
+- Canonical GitHub account: `MadMax3366`
 - Initial commit: `b8dca7a6de2cb8ba040a12bfa1406fdede103a67`
 - Complete history policy: commits are retained without squashing
+- Wide architecture HTML: `docs/architecture-status.html`
 
 ## Source categories
 

@@ -1,6 +1,6 @@
 # Austin Evaluation-Only License 1.0
 
-Copyright © 2026 MadMax3366. All rights reserved.
+Copyright © 2026 Junfeng Yan (GitHub account: MadMax3366). All rights reserved.
 
 Artifact ID: `AUS-HOMEWORK-MADMAX3366-2026-09`
 
@@ -59,6 +59,8 @@ THE ARTIFACT IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 ## 10. Additional permission
 
 Requests for permission beyond this evaluation license must be made in writing to the owner of the canonical repository:
+
+`Junfeng Yan (GitHub: MadMax3366)`
 
 `https://github.com/MadMax3366/Austin_homework`
 

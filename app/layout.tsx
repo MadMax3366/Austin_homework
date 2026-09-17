@@ -31,7 +31,7 @@ export default function RootLayout({
       <body className="antialiased">
         {children}
         <footer className="border-t border-border bg-white px-5 py-3 text-center text-xs text-muted-foreground">
-          Proprietary evaluation artifact · Not open source · AUS-HOMEWORK-MADMAX3366-2026-09
+          © 2026 Junfeng Yan · GitHub: MadMax3366 · Proprietary evaluation artifact · Not open source · AUS-HOMEWORK-MADMAX3366-2026-09
         </footer>
       </body>
     </html>

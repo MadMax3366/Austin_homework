@@ -1,5 +1,7 @@
 # Austin Education 学生运营系统架构
 
+宽体状态图：[docs/architecture-status.html](./docs/architecture-status.html)
+
 设计目标：在约 1,000 名学生、10 名运营、20 名老师、每周约 60 节课的规模下，把招生、排课、履约、课时、财务、薪资和系统恢复放进一条可审计链路。采用模块化单体；功能已实现到 sandbox 可运行深度，真实支付／银行／消息 provider 仍是外部部署边界。
 
 ## 1. 五层架构

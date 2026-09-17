@@ -18,7 +18,7 @@ Please reply to acknowledge these evaluation terms. If your retention or complia
 
 Regards,
 
-[LEGAL NAME]
+Junfeng Yan (GitHub: MadMax3366)
 [CONTACT]
 
 ---

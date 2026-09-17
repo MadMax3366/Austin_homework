@@ -2,7 +2,8 @@
 
 - **Artifact ID:** `AUS-HOMEWORK-MADMAX3366-2026-09`
 - **Canonical repository:** `https://github.com/MadMax3366/Austin_homework`
-- **Copyright holder identifier:** GitHub account `MadMax3366`
+- **Copyright holder:** Junfeng Yan
+- **Canonical GitHub account:** `MadMax3366`
 - **First recorded commit:** `b8dca7a6de2cb8ba040a12bfa1406fdede103a67`
 - **Purpose:** full-stack engineering interview evaluation
 

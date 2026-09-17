@@ -11,6 +11,7 @@ const requiredFiles = [
   "AUTHORS.md",
   "EVALUATOR_AUTHORIZATION_TEMPLATE.md",
   "REPOSITORY_HARDENING.md",
+  "docs/architecture-status.html",
   "build/sites-vite-plugin.LICENSE",
   "vendor/shadcn-tailwind-4.13.0.LICENSE.md",
 ];
@@ -32,6 +33,7 @@ const notice = readFileSync("NOTICE.md", "utf8");
 const thirdParty = readFileSync("THIRD_PARTY_NOTICES.md", "utf8");
 for (const phrase of [
   "Austin Evaluation-Only License 1.0",
+  "Junfeng Yan (GitHub account: MadMax3366)",
   "AUS-HOMEWORK-MADMAX3366-2026-09",
   "Public availability does not make this Artifact open source",
 ]) {

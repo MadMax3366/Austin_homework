@@ -3,7 +3,9 @@ message: "This is a proprietary interview evaluation artifact. Cite the canonica
 title: "Austin Education Student Operations System"
 type: software
 authors:
-  - family-names: "MadMax3366"
+  - family-names: "Yan"
+    given-names: "Junfeng"
+    alias: "MadMax3366"
 repository-code: "https://github.com/MadMax3366/Austin_homework"
 version: "evaluation-2026-09"
 date-released: 2026-09-17
