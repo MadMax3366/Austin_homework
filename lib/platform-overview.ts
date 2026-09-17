@@ -18,6 +18,9 @@ export type OverviewSection = {
   id: string;
   title: string;
   rows: Array<Record<string, string | number | null>>;
+  totalRows?: number;
+  page?: number;
+  pageSize?: number;
 };
 
 export type PlatformOverview = {
@@ -29,12 +32,27 @@ export type PlatformOverview = {
     organizationId?: string;
     studentId?: string;
     lowBalanceThreshold?: number;
+    studentQuery?: string;
+    ownedStudentCount?: number;
+    organizationStudentCount?: number;
   };
 };
+
+type OperationsOverviewOptions = {
+  studentQuery: string;
+  studentPage: number;
+};
+
+const STUDENT_PAGE_SIZE = 25;
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
 
 async function operationsOverview(
   account: PlatformAccount,
   assignment: RoleAssignment,
+  options: OperationsOverviewOptions,
 ): Promise<PlatformOverview> {
   const db = getD1();
   const today = melbourneDate();
@@ -54,16 +72,22 @@ async function operationsOverview(
       lowBalanceThreshold = 3;
     }
   }
+  const studentQuery = options.studentQuery.trim();
+  const studentPattern = `%${escapeLike(studentQuery)}%`;
+  const studentOffset = (options.studentPage - 1) * STUDENT_PAGE_SIZE;
   const [
     summary,
     inquiries,
     trialFollowUps,
     pendingTrialOutcomes,
     lowBalances,
+    lowBalanceCount,
     trials,
     tasks,
     schedule,
     students,
+    studentCount,
+    adminWorkloads,
     teachers,
     rooms,
     classes,
@@ -82,7 +106,13 @@ async function operationsOverview(
        JOIN lesson_sessions session ON session.id=booking.lesson_session_id
        WHERE inquiry.organization_id=? AND session.session_date=?
          AND session.status='scheduled'
-         AND (?='organization' OR inquiry.owner_admin_id=?)) AS trialsToday`)
+         AND (?='organization' OR inquiry.owner_admin_id=?)) AS trialsToday,
+      (SELECT COUNT(*) FROM students) AS organizationStudents,
+      (SELECT COUNT(*) FROM students WHERE owner_admin_id=?) AS ownedStudents,
+      (SELECT COUNT(*) FROM staff_users WHERE role='admin' AND active=1) AS operationsAdmins,
+      (SELECT COUNT(*) FROM staff_users WHERE role='teacher' AND active=1) AS teachers,
+      (SELECT COUNT(*) FROM class_series
+       WHERE active=1 AND session_kind='regular') AS weeklyClasses`)
       .bind(
         account.organizationId,
         assignment.scopeType,
@@ -93,6 +123,7 @@ async function operationsOverview(
         account.organizationId,
         today,
         assignment.scopeType,
+        assignment.staffUserId,
         assignment.staffUserId,
       )
       .first<Record<string, number>>(),
@@ -166,9 +197,22 @@ async function operationsOverview(
         AND (?='organization' OR student.owner_admin_id=?)
       GROUP BY student.id,student.preferred_name,student.legal_name,staff.display_name
       HAVING COALESCE(SUM(transaction_record.quantity),0)<=?
-      ORDER BY credits,student.legal_name LIMIT 30`)
+      ORDER BY credits,student.legal_name,student.id LIMIT 30`)
       .bind(assignment.scopeType, assignment.staffUserId, lowBalanceThreshold)
       .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT COUNT(*) AS count FROM (
+      SELECT student.id
+      FROM students student
+      JOIN credit_accounts account_record ON account_record.student_id=student.id
+      LEFT JOIN credit_transactions transaction_record
+        ON transaction_record.account_id=account_record.id
+      WHERE student.lifecycle_status='active'
+        AND (?='organization' OR student.owner_admin_id=?)
+      GROUP BY student.id
+      HAVING COALESCE(SUM(transaction_record.quantity),0)<=?
+    ) low_credit_students`)
+      .bind(assignment.scopeType, assignment.staffUserId, lowBalanceThreshold)
+      .first<{ count: number }>(),
     db.prepare(`SELECT booking.id,inquiry.id AS inquiryId,
         COALESCE(student.preferred_name,student.legal_name) AS student,
         booking.outcome,booking.conversion_decision AS decision,
@@ -219,9 +263,46 @@ async function operationsOverview(
       LEFT JOIN credit_accounts account_record ON account_record.student_id=student.id
       LEFT JOIN credit_transactions transaction_record
         ON transaction_record.account_id=account_record.id
-      WHERE (?='organization' OR student.owner_admin_id=?)
-      GROUP BY student.id ORDER BY student.updated_at DESC LIMIT 30`)
-      .bind(assignment.scopeType, assignment.staffUserId)
+      WHERE (?='' OR student.id LIKE ? ESCAPE '\\'
+        OR student.legal_name LIKE ? ESCAPE '\\'
+        OR COALESCE(student.preferred_name,'') LIKE ? ESCAPE '\\'
+        OR COALESCE(staff.display_name,'') LIKE ? ESCAPE '\\')
+      GROUP BY student.id
+      ORDER BY student.legal_name,student.id LIMIT ? OFFSET ?`)
+      .bind(
+        studentQuery,
+        studentPattern,
+        studentPattern,
+        studentPattern,
+        studentPattern,
+        STUDENT_PAGE_SIZE,
+        studentOffset,
+      )
+      .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT COUNT(*) AS count
+      FROM students student
+      LEFT JOIN staff_users staff ON staff.id=student.owner_admin_id
+      WHERE (?='' OR student.id LIKE ? ESCAPE '\\'
+        OR student.legal_name LIKE ? ESCAPE '\\'
+        OR COALESCE(student.preferred_name,'') LIKE ? ESCAPE '\\'
+        OR COALESCE(staff.display_name,'') LIKE ? ESCAPE '\\')`)
+      .bind(
+        studentQuery,
+        studentPattern,
+        studentPattern,
+        studentPattern,
+        studentPattern,
+      )
+      .first<{ count: number }>(),
+    db.prepare(`SELECT staff.id,
+        staff.display_name AS admin,
+        staff.email,
+        COUNT(student.id) AS students
+      FROM staff_users staff
+      LEFT JOIN students student ON student.owner_admin_id=staff.id
+      WHERE staff.role='admin' AND staff.active=1
+      GROUP BY staff.id,staff.display_name,staff.email
+      ORDER BY staff.display_name,staff.id`)
       .all<Record<string, string | number | null>>(),
     db.prepare(`SELECT id,display_name AS name,email
       FROM staff_users WHERE role='teacher' AND active=1 ORDER BY display_name`)
@@ -244,10 +325,15 @@ async function operationsOverview(
     context: {
       organizationId: account.organizationId,
       lowBalanceThreshold,
+      studentQuery,
+      ownedStudentCount: Number(summary?.ownedStudents ?? 0),
+      organizationStudentCount: Number(summary?.organizationStudents ?? 0),
     },
     metrics: [
       { label: "试听完成待跟进", value: trialAttention.length, tone: "warning" },
-      { label: `低课时学生（≤${lowBalanceThreshold}）`, value: lowBalances.results.length, tone: "warning" },
+      { label: `低课时学生（≤${lowBalanceThreshold}）`, value: Number(lowBalanceCount?.count ?? 0), tone: "warning" },
+      { label: "我的学生", value: Number(summary?.ownedStudents ?? 0) },
+      { label: "全机构学生", value: Number(summary?.organizationStudents ?? 0) },
       { label: "活跃咨询", value: Number(summary?.activeInquiries ?? 0) },
       { label: "今日试听", value: Number(summary?.trialsToday ?? 0) },
     ],
@@ -258,7 +344,20 @@ async function operationsOverview(
       { id: "trials", title: "试听结果", rows: trials.results },
       { id: "tasks", title: "待跟进任务", rows: tasks.results },
       { id: "schedule", title: "今日全局课表", rows: schedule.results },
-      { id: "students", title: "学生与课时", rows: students.results },
+      {
+        id: "students",
+        title: "学生与课时",
+        rows: students.results,
+        totalRows: Number(studentCount?.count ?? 0),
+        page: options.studentPage,
+        pageSize: STUDENT_PAGE_SIZE,
+      },
+      {
+        id: "admin-workloads",
+        title: "运营学生负载",
+        rows: adminWorkloads.results,
+        totalRows: adminWorkloads.results.length,
+      },
       {
         id: "resources",
         title: "排课资源",
@@ -275,7 +374,7 @@ async function operationsOverview(
 async function managerOverview(account: PlatformAccount): Promise<PlatformOverview> {
   const db = getD1();
   const today = melbourneDate();
-  const [summary, payroll, periods, ordersResult, refundsResult, exceptions, conflicts, support] =
+  const [summary, payroll, periods, ordersResult, refundsResult, exceptions, conflicts, support, adminWorkloads] =
     await Promise.all([
       db.prepare(`SELECT
         (SELECT COALESCE(SUM(amount_cents),0) FROM orders
@@ -289,7 +388,14 @@ async function managerOverview(account: PlatformAccount): Promise<PlatformOvervi
          JOIN payroll_periods period ON period.id=entry.payroll_period_id
          WHERE period.organization_id=? AND entry.status='accrued') AS accruedPayroll,
         (SELECT COUNT(*) FROM billing_exceptions
-         WHERE status='open') AS billingExceptions`)
+         WHERE status='open') AS billingExceptions,
+        (SELECT COUNT(*) FROM students) AS totalStudents,
+        (SELECT COUNT(*) FROM staff_users
+         WHERE role='admin' AND active=1) AS operationsAdmins,
+        (SELECT COUNT(*) FROM staff_users
+         WHERE role='teacher' AND active=1) AS activeTeachers,
+        (SELECT COUNT(*) FROM class_series
+         WHERE active=1 AND session_kind='regular') AS weeklyClasses`)
         .bind(account.organizationId, account.organizationId, account.organizationId)
         .first<Record<string, number>>(),
       db.prepare(`SELECT entry.id, staff.display_name AS teacher,
@@ -365,18 +471,38 @@ async function managerOverview(account: PlatformAccount): Promise<PlatformOvervi
         ORDER BY created_at DESC LIMIT 20`)
         .bind(account.organizationId)
         .all<Record<string, string | number | null>>(),
+      db.prepare(`SELECT staff.id,
+          staff.display_name AS admin,
+          staff.email,
+          COUNT(student.id) AS students
+        FROM staff_users staff
+        LEFT JOIN students student ON student.owner_admin_id=staff.id
+        WHERE staff.role='admin' AND staff.active=1
+        GROUP BY staff.id,staff.display_name,staff.email
+        ORDER BY staff.display_name,staff.id`)
+        .all<Record<string, string | number | null>>(),
     ]);
   return {
     role: "manager_admin",
     title: "主管管理台",
     context: { organizationId: account.organizationId },
     metrics: [
+      { label: "全机构学生", value: Number(summary?.totalStudents ?? 0) },
+      { label: "运营管理员", value: Number(summary?.operationsAdmins ?? 0) },
+      { label: "在职老师", value: Number(summary?.activeTeachers ?? 0) },
+      { label: "每周固定班", value: Number(summary?.weeklyClasses ?? 0) },
       { label: "已收款", value: "$" + (Number(summary?.paidRevenue ?? 0) / 100).toFixed(2), tone: "positive" },
       { label: "待处理退款", value: Number(summary?.pendingRefunds ?? 0), tone: "warning" },
       { label: "待核薪资", value: "$" + (Number(summary?.accruedPayroll ?? 0) / 100).toFixed(2) },
       { label: "课时异常", value: Number(summary?.billingExceptions ?? 0), tone: "warning" },
     ],
     sections: [
+      {
+        id: "admin-workloads",
+        title: "运营学生负载",
+        rows: adminWorkloads.results,
+        totalRows: adminWorkloads.results.length,
+      },
       { id: "conflicts", title: "排课冲突", rows: conflicts.results },
       { id: "payroll", title: "老师薪资", rows: payroll.results },
       { id: "payroll-periods", title: "薪资周期", rows: periods.results },
@@ -554,16 +680,23 @@ export async function getPlatformOverview(
   role: PlatformRole,
   account: PlatformAccount,
   assignment: RoleAssignment,
-  selectedStudentId?: string | null,
+  options: {
+    selectedStudentId?: string | null;
+    studentQuery?: string;
+    studentPage?: number;
+  } = {},
 ): Promise<PlatformOverview> {
   switch (role) {
     case "operations_admin":
-      return operationsOverview(account, assignment);
+      return operationsOverview(account, assignment, {
+        studentQuery: options.studentQuery ?? "",
+        studentPage: options.studentPage ?? 1,
+      });
     case "manager_admin":
       return managerOverview(account);
     case "student":
     case "guardian":
-      return portalOverview(role, assignment, selectedStudentId);
+      return portalOverview(role, assignment, options.selectedStudentId);
     case "system_admin":
       return systemOverview(account);
     default:

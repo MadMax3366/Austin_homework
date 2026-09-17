@@ -44,7 +44,7 @@ import { Toaster } from "@/components/ui/sonner";
 import type { PlatformRole } from "@/lib/account-auth";
 import type { PlatformCommandInput } from "@/lib/domain";
 import type { PlatformCommandResult } from "@/lib/platform-commands";
-import type { PlatformOverview } from "@/lib/platform-overview";
+import type { OverviewSection, PlatformOverview } from "@/lib/platform-overview";
 import type { FaqTriageResult } from "@/lib/types";
 
 type Viewer = { displayName: string; email: string; signOutPath: string };
@@ -154,6 +154,71 @@ function DataTable({ rows }: { rows: Row[] }) {
           ))}
         </TableBody>
       </Table>
+    </div>
+  );
+}
+
+function StudentDirectoryControls({
+  section,
+  query,
+  ownedStudents,
+  organizationStudents,
+  onQueryChange,
+  onSearch,
+  onPageChange,
+}: {
+  section: OverviewSection;
+  query: string;
+  ownedStudents: number;
+  organizationStudents: number;
+  onQueryChange: (value: string) => void;
+  onSearch: (query: string) => void;
+  onPageChange: (page: number) => void;
+}) {
+  const page = section.page ?? 1;
+  const pageSize = section.pageSize ?? 25;
+  const total = section.totalRows ?? section.rows.length;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  return (
+    <div className="mb-4 space-y-3 rounded-xl border bg-white p-4">
+      <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
+        <span><strong>{ownedStudents.toLocaleString("en-AU")}</strong> 名下学生</span>
+        <span><strong>{organizationStudents.toLocaleString("en-AU")}</strong> 全机构学生</span>
+      </div>
+      <form
+        className="flex flex-col gap-2 sm:flex-row"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSearch(query);
+        }}
+      >
+        <Input
+          aria-label="搜索学生"
+          maxLength={80}
+          placeholder="按学生姓名、ID 或负责人搜索"
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+        />
+        <Button type="submit">搜索</Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!query}
+          onClick={() => {
+            onQueryChange("");
+            onSearch("");
+          }}
+        >
+          清除
+        </Button>
+      </form>
+      <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+        <span>匹配 {total.toLocaleString("en-AU")} 人 · 第 {page} / {pageCount} 页</span>
+        <div className="flex gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>上一页</Button>
+          <Button type="button" size="sm" variant="outline" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)}>下一页</Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -447,15 +512,26 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ code: string; message: string } | null>(null);
+  const [activeSection, setActiveSection] = useState<string>();
+  const [studentSearch, setStudentSearch] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const query = new URLSearchParams({ role });
-      const selectedStudent = new URLSearchParams(window.location.search).get("studentId");
+      const locationSearch = new URLSearchParams(window.location.search);
+      const selectedStudent = locationSearch.get("studentId");
       if (selectedStudent) query.set("studentId", selectedStudent);
-      setData(await requestJson<PlatformOverview>(`/api/platform/overview?${query}`));
+      const studentQuery = locationSearch.get("studentQuery");
+      const studentPage = locationSearch.get("studentPage");
+      if (studentQuery) query.set("studentQuery", studentQuery);
+      if (studentPage) query.set("studentPage", studentPage);
+      const nextData = await requestJson<PlatformOverview>(`/api/platform/overview?${query}`);
+      setData(nextData);
+      if (role === "operations_admin") {
+        setStudentSearch(nextData.context?.studentQuery ?? "");
+      }
     } catch (caught) {
       const next = caught instanceof ClientApiError ? caught : new ClientApiError("LOAD_FAILED", "工作台加载失败。");
       setError({ code: next.code, message: next.message });
@@ -491,6 +567,18 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
     const url = new URL(window.location.href);
     url.searchParams.set("studentId", studentId);
     window.history.replaceState({}, "", url);
+    void load();
+  };
+
+  const updateStudentDirectory = (queryValue: string, page: number) => {
+    const url = new URL(window.location.href);
+    const normalized = queryValue.trim();
+    if (normalized) url.searchParams.set("studentQuery", normalized);
+    else url.searchParams.delete("studentQuery");
+    if (page > 1) url.searchParams.set("studentPage", String(page));
+    else url.searchParams.delete("studentPage");
+    window.history.replaceState({}, "", url);
+    setActiveSection("students");
     void load();
   };
 
@@ -539,9 +627,32 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
               {data.metrics.map((metric) => <Card key={metric.label} className={metric.tone === "warning" ? "border-amber-300 bg-amber-50/60" : metric.tone === "positive" ? "border-emerald-300 bg-emerald-50/60" : "bg-white"}><CardHeader className="pb-0"><CardDescription>{metric.label}</CardDescription><CardTitle className="text-2xl">{metric.value}</CardTitle></CardHeader></Card>)}
             </div>
             <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-              <Tabs defaultValue={data.sections[0]?.id} className="min-w-0">
-                <div className="overflow-x-auto pb-2"><TabsList variant="line">{data.sections.map((section) => <TabsTrigger key={section.id} value={section.id}>{section.title}<Badge variant="secondary">{section.rows.length}</Badge></TabsTrigger>)}</TabsList></div>
-                {data.sections.map((section) => <TabsContent key={section.id} value={section.id} className="mt-4"><div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-[var(--navy-950)]">{section.title}</h2><span className="text-xs text-muted-foreground">实时查询 · 最多 30 条</span></div><DataTable rows={section.rows} /></TabsContent>)}
+              <Tabs value={activeSection ?? data.sections[0]?.id} onValueChange={setActiveSection} className="min-w-0">
+                <div className="overflow-x-auto pb-2"><TabsList variant="line">{data.sections.map((section) => <TabsTrigger key={section.id} value={section.id}>{section.title}<Badge variant="secondary">{section.totalRows ?? section.rows.length}</Badge></TabsTrigger>)}</TabsList></div>
+                {data.sections.map((section) => (
+                  <TabsContent key={section.id} value={section.id} className="mt-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <h2 className="text-lg font-semibold text-[var(--navy-950)]">{section.title}</h2>
+                      <span className="text-xs text-muted-foreground">
+                        {section.totalRows === undefined
+                          ? `实时查询 · 当前 ${section.rows.length} 条`
+                          : `显示 ${section.rows.length} / 共 ${section.totalRows.toLocaleString("en-AU")} 条`}
+                      </span>
+                    </div>
+                    {role === "operations_admin" && section.id === "students" ? (
+                      <StudentDirectoryControls
+                        section={section}
+                        query={studentSearch}
+                        ownedStudents={data.context?.ownedStudentCount ?? 0}
+                        organizationStudents={data.context?.organizationStudentCount ?? 0}
+                        onQueryChange={setStudentSearch}
+                        onSearch={(value) => updateStudentDirectory(value, 1)}
+                        onPageChange={(page) => updateStudentDirectory(studentSearch, page)}
+                      />
+                    ) : null}
+                    <DataTable rows={section.rows} />
+                  </TabsContent>
+                ))}
               </Tabs>
               <aside>
                 {role === "operations_admin" ? (

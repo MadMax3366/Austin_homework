@@ -5,8 +5,9 @@
 | 时间 | 操作 | 要讲的判断 |
 |---:|---|---|
 | 0:00 | 登录并选择运营角色 | 可信身份和角色来自服务端；同一账号可有多职责，但每次 API 都重新授权 |
-| 0:40 | 打开运营首页 | 第一屏直接回答题面：哪些试听完成未跟进、哪些本人学生课时 ≤ 机构阈值 |
-| 1:30 | 查看“试听完成待跟进” | 聚合“已上试听但结果未录”和“结果已录但人工 follow-up 仍 open”，不用跨 Tab 拼信息 |
+| 0:40 | 打开运营首页 | 第一屏显示“我的学生 100／全机构 1,000”；10 位运营各 100 人，不把低课时队列数量误当总人数 |
+| 1:10 | 在“学生与课时”搜索并翻页 | 查询在服务端参数化执行；全机构可见，写操作仍按 owner 授权 |
+| 1:40 | 查看“试听完成待跟进” | 聚合“已上试听但结果未录”和“结果已录但人工 follow-up 仍 open”，不用跨 Tab 拼信息 |
 | 2:20 | 记录试听 attended + enrol | 老师必须先完成出勤；服务端状态机拒绝提前或 cancelled 直接 enrol |
 | 3:10 | 完成试听跟进并转正式 | 更新任务、招生状态、Enrollment 和首期待付订单，全部留审计 |
 | 4:20 | 查看“低课时学生（≤3）” | 只列 active 且归当前 Admin owner 的学生；阈值来自机构设置，不包含 prospect |
@@ -29,7 +30,8 @@
 
 | 攻击 | 预期 |
 |---|---|
-| Admin 查询／修改另一个 owner 的学生 | 403 STUDENT_SCOPE_FORBIDDEN |
+| Admin 在全机构目录查看另一个 owner 的学生 | 允许只读查看 |
+| Admin 修改另一个 owner 的学生 | 403 STUDENT_SCOPE_FORBIDDEN |
 | 学生调用 `create_inquiry` | 403 ROLE_FORBIDDEN |
 | 家长传入未关联 `studentId` | 403 STUDENT_SCOPE_FORBIDDEN |
 | Evil Origin 发写请求 | 403 CROSS_ORIGIN_REQUEST_REJECTED |
@@ -44,7 +46,7 @@
 
 ## 演示成功判据
 
-- Admin 两个行动队列有真实、owner-scoped 数据和可执行动作。
+- Admin 可搜索分页查看 1,000 名学生；本人 100 名与全机构总数清晰；两个行动队列有真实、owner-scoped 数据和可执行动作。
 - 刷新后状态保持；预期失败返回 403／409／422，而不是 500。
 - FAQ 自动回答只来自批准条目；人工转接能在数据库和运营任务队列中找到。
 - 支付 replay 只有一条 PaymentTransaction 和一条 purchase ledger。

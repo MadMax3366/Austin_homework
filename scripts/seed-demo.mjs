@@ -78,6 +78,38 @@ VALUES
   ('staff_admin_liam', 'demo_admin_liam', 'liam@example.test', 'Liam Wilson', 'admin', 1),
   ('staff_manager_ava', 'demo_manager_ava', 'ava@example.test', 'Ava Thompson', 'manager', 1);
 
+WITH RECURSIVE seq(n) AS (
+  SELECT 3
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 10
+)
+INSERT OR IGNORE INTO staff_users
+  (id, auth_user_id, email, display_name, role, active)
+SELECT
+  printf('staff_admin_scale_%02d', n),
+  printf('demo_admin_scale_%02d', n),
+  printf('operations%02d@example.test', n),
+  printf('Operations Admin %02d', n),
+  'admin',
+  1
+FROM seq;
+
+WITH RECURSIVE seq(n) AS (
+  SELECT 3
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 20
+)
+INSERT OR IGNORE INTO staff_users
+  (id, auth_user_id, email, display_name, role, active)
+SELECT
+  printf('staff_teacher_scale_%02d', n),
+  printf('demo_teacher_scale_%02d', n),
+  printf('teacher%02d@example.test', n),
+  printf('Teacher %02d', n),
+  'teacher',
+  1
+FROM seq;
+
 INSERT OR IGNORE INTO students
   (id, legal_name, preferred_name, date_of_birth, lifecycle_status, owner_admin_id)
 VALUES
@@ -103,11 +135,48 @@ SELECT
   'staff_admin_sofia'
 FROM seq;
 
+WITH RECURSIVE seq(n) AS (
+  SELECT 31
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 1000
+)
+INSERT OR IGNORE INTO students
+  (id, legal_name, preferred_name, date_of_birth, lifecycle_status, owner_admin_id)
+SELECT
+  printf('student_scale_%04d', n),
+  printf('Scale Student %04d', n),
+  printf('Student %04d', n),
+  printf('%04d-%02d-%02d', 2010 + (n % 6), 1 + (n % 12), 1 + (n % 27)),
+  CASE
+    WHEN n % 29 = 0 THEN 'paused'
+    WHEN n % 31 = 0 THEN 'inactive'
+    ELSE 'active'
+  END,
+  CASE
+    WHEN n <= 101 THEN 'staff_admin_sofia'
+    WHEN n <= 200 THEN 'staff_admin_liam'
+    ELSE printf('staff_admin_scale_%02d', CAST((n - 1) / 100 AS INTEGER) + 1)
+  END
+FROM seq;
+
 INSERT OR IGNORE INTO guardians (id, full_name, email, phone)
 VALUES
   ('guardian_01', 'Grace Chen', 'grace@example.test', '0400 000 001'),
   ('guardian_02', 'Daniel Wang', 'daniel@example.test', '0400 000 002'),
   ('guardian_03', 'Jenny Li', 'jenny@example.test', '0400 000 003');
+
+WITH RECURSIVE seq(n) AS (
+  SELECT 31
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 1000
+)
+INSERT OR IGNORE INTO guardians (id, full_name, email, phone)
+SELECT
+  printf('guardian_scale_%04d', n),
+  printf('Guardian %04d', n),
+  printf('guardian%04d@example.test', n),
+  printf('04%08d', n)
+FROM seq;
 
 INSERT OR IGNORE INTO student_guardians
   (student_id, guardian_id, relationship, is_primary)
@@ -115,6 +184,16 @@ VALUES
   ('student_01', 'guardian_01', 'mother', 1),
   ('student_02', 'guardian_02', 'father', 1),
   ('student_05', 'guardian_03', 'mother', 1);
+
+INSERT OR IGNORE INTO student_guardians
+  (student_id, guardian_id, relationship, is_primary)
+SELECT
+  student.id,
+  'guardian_scale_' || substr(student.id, -4),
+  'guardian',
+  1
+FROM students AS student
+WHERE student.id LIKE 'student_scale_%';
 
 INSERT OR IGNORE INTO credit_accounts (id, student_id)
 SELECT 'credits_' || id, id FROM students;
@@ -140,6 +219,21 @@ FROM students AS student
 JOIN credit_accounts AS account ON account.student_id=student.id
 WHERE student.id <> 'student_05'
   AND student.id GLOB 'student_[0-9][0-9]';
+
+INSERT OR IGNORE INTO credit_transactions
+  (id, account_id, kind, quantity, source_type, source_id, note, created_by_id)
+SELECT
+  'credit_opening_' || student.id,
+  account.id,
+  'purchase',
+  4 + (CAST(substr(student.id, -4) AS INTEGER) % 13),
+  'seed',
+  'opening_balance',
+  'Synthetic scale opening balance',
+  student.owner_admin_id
+FROM students AS student
+JOIN credit_accounts AS account ON account.student_id=student.id
+WHERE student.id LIKE 'student_scale_%';
 
 INSERT OR IGNORE INTO class_series
   (id, name, subject, room, weekday, local_start_time, local_end_time, default_teacher_id, capacity, active)
@@ -284,7 +378,43 @@ INSERT OR IGNORE INTO user_accounts
 VALUES
   ('account_demo','org_austin','local_seedy','seedy@sites.test','Demo User','active'),
   ('account_independent_manager','org_austin','demo_independent_manager',
-   'manager2@example.test','Independent Manager','active');
+   'manager2@example.test','Independent Manager','active'),
+  ('account_operations_02','org_austin','demo_admin_liam',
+   'liam@example.test','Liam Wilson','active'),
+  ('account_teacher_02','org_austin','demo_teacher_arjun',
+   'arjun@example.test','Arjun Patel','active');
+
+WITH RECURSIVE seq(n) AS (
+  SELECT 3
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 10
+)
+INSERT OR IGNORE INTO user_accounts
+  (id,organization_id,auth_user_id,email,display_name,status)
+SELECT
+  printf('account_operations_%02d', n),
+  'org_austin',
+  printf('demo_admin_scale_%02d', n),
+  printf('operations%02d@example.test', n),
+  printf('Operations Admin %02d', n),
+  'active'
+FROM seq;
+
+WITH RECURSIVE seq(n) AS (
+  SELECT 3
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 20
+)
+INSERT OR IGNORE INTO user_accounts
+  (id,organization_id,auth_user_id,email,display_name,status)
+SELECT
+  printf('account_teacher_%02d', n),
+  'org_austin',
+  printf('demo_teacher_scale_%02d', n),
+  printf('teacher%02d@example.test', n),
+  printf('Teacher %02d', n),
+  'active'
+FROM seq;
 
 INSERT OR IGNORE INTO account_role_assignments
   (id,account_id,role,staff_user_id,student_id,guardian_id,scope_type,scope_id,active)
@@ -295,7 +425,47 @@ VALUES
   ('role_demo_student','account_demo','student',NULL,'student_01',NULL,'self','student_01',1),
   ('role_demo_guardian','account_demo','guardian',NULL,NULL,'guardian_01','self','guardian_01',1),
   ('role_demo_system','account_demo','system_admin',NULL,NULL,NULL,'organization','org_austin',1),
-  ('role_independent_manager','account_independent_manager','manager_admin','staff_manager_ava',NULL,NULL,'organization','org_austin',1);
+  ('role_independent_manager','account_independent_manager','manager_admin','staff_manager_ava',NULL,NULL,'organization','org_austin',1),
+  ('role_operations_02','account_operations_02','operations_admin','staff_admin_liam',NULL,NULL,'owner','staff_admin_liam',1),
+  ('role_teacher_02','account_teacher_02','teacher','staff_teacher_arjun',NULL,NULL,'self','staff_teacher_arjun',1);
+
+WITH RECURSIVE seq(n) AS (
+  SELECT 3
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 10
+)
+INSERT OR IGNORE INTO account_role_assignments
+  (id,account_id,role,staff_user_id,student_id,guardian_id,scope_type,scope_id,active)
+SELECT
+  printf('role_operations_%02d', n),
+  printf('account_operations_%02d', n),
+  'operations_admin',
+  printf('staff_admin_scale_%02d', n),
+  NULL,
+  NULL,
+  'owner',
+  printf('staff_admin_scale_%02d', n),
+  1
+FROM seq;
+
+WITH RECURSIVE seq(n) AS (
+  SELECT 3
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 20
+)
+INSERT OR IGNORE INTO account_role_assignments
+  (id,account_id,role,staff_user_id,student_id,guardian_id,scope_type,scope_id,active)
+SELECT
+  printf('role_teacher_%02d', n),
+  printf('account_teacher_%02d', n),
+  'teacher',
+  printf('staff_teacher_scale_%02d', n),
+  NULL,
+  NULL,
+  'self',
+  printf('staff_teacher_scale_%02d', n),
+  1
+FROM seq;
 
 INSERT OR IGNORE INTO organization_settings
   (id,organization_id,setting_key,value_json,updated_by_id)
@@ -331,6 +501,57 @@ VALUES
   ('room_4','org_austin','Room 4',10,1),
   ('room_lab_1','org_austin','Lab 1',12,1),
   ('room_5','org_austin','Room 5',8,1);
+
+WITH RECURSIVE seq(n) AS (
+  SELECT 1
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 8
+)
+INSERT OR IGNORE INTO rooms (id,organization_id,name,capacity,active)
+SELECT
+  printf('room_scale_%02d', n),
+  'org_austin',
+  printf('Scale Room %02d', n),
+  14,
+  1
+FROM seq;
+
+WITH RECURSIVE seq(n) AS (
+  SELECT 5
+  UNION ALL
+  SELECT n + 1 FROM seq WHERE n < 60
+)
+INSERT OR IGNORE INTO class_series
+  (id,name,subject,room,weekday,local_start_time,local_end_time,
+   session_kind,default_teacher_id,capacity,active)
+SELECT
+  printf('series_scale_%02d', n),
+  printf('Weekly Class %02d', n),
+  CASE n % 3 WHEN 0 THEN 'Mathematics' WHEN 1 THEN 'English' ELSE 'Science' END,
+  printf('Scale Room %02d', 1 + ((n - 1) % 8)),
+  1 + ((n - 1) % 6),
+  printf('%02d:00', 9 + ((n - 1) % 8)),
+  printf('%02d:00', 10 + ((n - 1) % 8)),
+  'regular',
+  CASE 1 + ((n - 1) % 20)
+    WHEN 1 THEN 'staff_teacher_mei'
+    WHEN 2 THEN 'staff_teacher_arjun'
+    ELSE printf('staff_teacher_scale_%02d', 1 + ((n - 1) % 20))
+  END,
+  14,
+  1
+FROM seq;
+
+INSERT OR IGNORE INTO class_series_programs (class_series_id,program_id)
+SELECT
+  series.id,
+  CASE series.subject
+    WHEN 'Mathematics' THEN 'program_math'
+    WHEN 'English' THEN 'program_english'
+    ELSE 'program_science'
+  END
+FROM class_series AS series
+WHERE series.id LIKE 'series_scale_%';
 
 UPDATE students SET lifecycle_status='prospect'
 WHERE id IN ('student_26','student_27','student_28','student_29','student_30');
@@ -550,10 +771,12 @@ try {
   );
 
   if (result.status !== 0) {
-    throw new Error("Demo seed failed. Build and apply migrations first.");
+    throw new Error(
+      "Demo seed failed. Build/apply migrations first; if the demo was already used, run npm run demo:reset.",
+    );
   }
   console.log(
-    `Demo data ready for ${today}. Mia has zero credits; Olivia is the only new student in the active class.`,
+    `Demo data ready for ${today}: 1,000 students, 10 operations admins, 20 teachers, and 60 weekly classes.`,
   );
 } finally {
   if (process.env.AUS_KEEP_SEED === "1") {

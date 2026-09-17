@@ -22,12 +22,32 @@ export async function GET(request: Request): Promise<Response> {
     if (!supportedRoles.includes(role)) {
       throw new AppError(400, "INVALID_WORKSPACE_ROLE", "Workspace role is invalid.");
     }
+    const studentQuery = (search.get("studentQuery") ?? "").trim();
+    if (studentQuery.length > 80) {
+      throw new AppError(
+        400,
+        "STUDENT_QUERY_TOO_LONG",
+        "Student search must be 80 characters or fewer.",
+      );
+    }
+    const studentPageRaw = search.get("studentPage") ?? "1";
+    if (!/^\d+$/.test(studentPageRaw)) {
+      throw new AppError(400, "INVALID_STUDENT_PAGE", "Student page is invalid.");
+    }
+    const studentPage = Number(studentPageRaw);
+    if (!Number.isSafeInteger(studentPage) || studentPage < 1 || studentPage > 10_000) {
+      throw new AppError(400, "INVALID_STUDENT_PAGE", "Student page is invalid.");
+    }
     const { account, assignment } = await requirePlatformRole(role);
     const overview = await getPlatformOverview(
       role,
       account,
       assignment,
-      search.get("studentId"),
+      {
+        selectedStudentId: search.get("studentId"),
+        studentQuery,
+        studentPage,
+      },
     );
     return Response.json(overview, {
       headers: {

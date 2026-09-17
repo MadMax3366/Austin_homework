@@ -113,11 +113,59 @@ for (const role of ["operations_admin", "manager_admin", "student", "guardian", 
   if (role === "operations_admin") {
     const trialAttention = overview.sections.find((section) => section.id === "trial-attention");
     const lowBalances = overview.sections.find((section) => section.id === "low-balances");
+    const students = overview.sections.find((section) => section.id === "students");
+    const workloads = overview.sections.find((section) => section.id === "admin-workloads");
     assert.ok(trialAttention?.rows.length >= 1, "Admin needs an explicit completed-trial attention queue");
     assert.ok(lowBalances?.rows.length >= 1, "Admin needs an explicit low-credit queue");
     assert.ok(lowBalances.rows.every((row) => Number(row.credits) <= 3));
+    assert.equal(overview.metrics.find((metric) => metric.label === "我的学生")?.value, 100);
+    assert.equal(overview.metrics.find((metric) => metric.label === "全机构学生")?.value, 1000);
+    assert.equal(students?.totalRows, 1000);
+    assert.equal(students?.rows.length, 25);
+    assert.equal(workloads?.rows.length, 10);
+    assert.ok(workloads.rows.every((row) => Number(row.students) === 100));
+  }
+  if (role === "manager_admin") {
+    assert.equal(overview.metrics.find((metric) => metric.label === "全机构学生")?.value, 1000);
+    assert.equal(overview.metrics.find((metric) => metric.label === "运营管理员")?.value, 10);
+    assert.equal(overview.metrics.find((metric) => metric.label === "在职老师")?.value, 20);
+    assert.equal(overview.metrics.find((metric) => metric.label === "每周固定班")?.value, 60);
   }
 }
+
+const studentPageTwo = await call(
+  "Operations pages through the 1,000-student directory",
+  "/api/platform/overview?role=operations_admin&studentPage=2",
+);
+const pageTwoRows = studentPageTwo.sections.find((section) => section.id === "students")?.rows;
+assert.equal(pageTwoRows?.length, 25);
+assert.equal(studentPageTwo.sections.find((section) => section.id === "students")?.page, 2);
+
+const studentSearch = await call(
+  "Operations searches the organization student directory",
+  "/api/platform/overview?role=operations_admin&studentQuery=student_scale_1000",
+);
+const searchSection = studentSearch.sections.find((section) => section.id === "students");
+assert.equal(searchSection?.totalRows, 1);
+assert.equal(searchSection?.rows[0]?.id, "student_scale_1000");
+
+const escapedWildcard = await call(
+  "Student search treats wildcard input literally",
+  "/api/platform/overview?role=operations_admin&studentQuery=%25",
+);
+assert.equal(escapedWildcard.sections.find((section) => section.id === "students")?.totalRows, 0);
+
+await call(
+  "Student directory rejects an invalid page",
+  "/api/platform/overview?role=operations_admin&studentPage=0",
+  { expected: 400 },
+);
+
+await call(
+  "Student directory rejects an oversized search",
+  `/api/platform/overview?role=operations_admin&studentQuery=${"x".repeat(81)}`,
+  { expected: 400 },
+);
 
 for (const role of ["teacher", "operations_admin", "manager_admin", "student", "guardian", "system_admin"]) {
   await call(`${role} page server render`, `/workspace/${role}`);
