@@ -408,13 +408,22 @@ function StudentDetailSheet({
   detail,
   loading,
   error,
+  classes,
+  busy,
+  run,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   detail: StudentDetail | null;
   loading: boolean;
   error: string;
+  classes: Row[];
+  busy: boolean;
+  run: (command: PlatformCommandInput) => Promise<void>;
 }) {
+  const [targetClassId, setTargetClassId] = useState("");
+  const effectiveTargetClassId = targetClassId || String(classes[0]?.id ?? "");
+  const paidOrder = detail?.orders.find((order) => order.status === "paid");
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">
@@ -432,8 +441,30 @@ function StudentDetailSheet({
                 <Card><CardHeader className="pb-3"><CardDescription>剩余课时</CardDescription><CardTitle className="text-lg">{Number(detail.student.credits).toLocaleString("zh-CN")}</CardTitle></CardHeader></Card>
                 <Card><CardHeader className="pb-3"><CardDescription>出生日期</CardDescription><CardTitle className="text-lg">{String(detail.student.dateOfBirth)}</CardTitle></CardHeader></Card>
               </div>
+              <Card>
+                <CardHeader><CardTitle className="text-base">学生操作</CardTitle></CardHeader>
+                <CardContent className="grid gap-3 sm:grid-cols-2">
+                  <select className="h-10 rounded-md border bg-white px-3 text-sm" value={effectiveTargetClassId} onChange={(event) => setTargetClassId(event.target.value)}>
+                    <option value="">选择班级</option>
+                    {classes.map((item) => <option key={String(item.id)} value={String(item.id)}>{String(item.name)} · {String(item.subject)}</option>)}
+                  </select>
+                  <Button disabled={busy || !effectiveTargetClassId} onClick={() => void run({ action: "enroll_student", studentId: String(detail.student.id), classSeriesId: effectiveTargetClassId })}>加入班级</Button>
+                  <Button variant="outline" disabled={busy} onClick={() => void run({ action: "create_order", studentId: String(detail.student.id), creditQuantity: 8, amountCents: 48000, description: "8课时续费" })}>创建续费订单</Button>
+                  <Button variant="outline" disabled={busy || !paidOrder} onClick={() => paidOrder && void run({ action: "request_refund", orderId: String(paidOrder.id), amountCents: Number(paidOrder.amountCents), reason: "家长申请退还未使用课时" })}>申请退还未使用课时</Button>
+                </CardContent>
+              </Card>
               <section><h3 className="mb-3 text-base font-semibold">本周课表</h3><WeekCalendar events={scheduleEvents(detail.schedule)} anchorDate={detail.week.startsOn} /></section>
-              <section><h3 className="mb-3 text-base font-semibold">班级与老师</h3><DataTable rows={detail.enrollments} /></section>
+              <section>
+                <h3 className="mb-3 text-base font-semibold">班级与老师</h3>
+                <DataTable rows={detail.enrollments} />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {detail.enrollments.filter((item) => item.status === "active").map((item) => (
+                    <Button key={String(item.id)} size="sm" variant="outline" disabled={busy} onClick={() => void run({ action: "end_enrollment", enrollmentId: String(item.id), reason: "运营办理退班" })}>
+                      退出 {String(item.className)}
+                    </Button>
+                  ))}
+                </div>
+              </section>
               <section><h3 className="mb-3 text-base font-semibold">家长信息</h3><DataTable rows={detail.guardians} /></section>
               <section><h3 className="mb-3 text-base font-semibold">近期出勤</h3><DataTable rows={detail.attendance} /></section>
               <section><h3 className="mb-3 text-base font-semibold">课时订单</h3><DataTable rows={detail.orders} /></section>
@@ -457,6 +488,23 @@ function Field({ label, value, onChange, type = "text", required = true }: {
       <Label>{label}</Label>
       <Input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
     </div>
+  );
+}
+
+function SelectField({ label, value, onChange, options }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <label className="block space-y-2 text-sm font-medium">
+      <span>{label}</span>
+      <select className="h-10 w-full rounded-md border bg-white px-3 font-normal" value={value} onChange={(event) => onChange(event.target.value)} required>
+        <option value="">请选择</option>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label>
   );
 }
 
@@ -537,23 +585,23 @@ function OperationsActions({ data, run, busy }: {
             </>
           ) : mode === "trial" ? (
             <>
-              <Field label="咨询编号" value={inquiryId} onChange={setInquiryId} />
-              <Field label="老师编号" value={teacherId} onChange={setTeacherId} />
-              <Field label="教室" value={roomName} onChange={setRoomName} />
+              <SelectField label="咨询学生" value={inquiryId} onChange={setInquiryId} options={inquiryRows.map((row) => ({ value: String(row.id), label: `${String(row.student)} · ${valueLabels[String(row.status)] ?? String(row.status)}` }))} />
+              <SelectField label="老师" value={teacherId} onChange={setTeacherId} options={resources.filter((row) => row.type === "teacher").map((row) => ({ value: String(row.id), label: String(row.name) }))} />
+              <SelectField label="教室" value={roomName} onChange={setRoomName} options={resources.filter((row) => row.type === "room").map((row) => ({ value: String(row.name), label: `${String(row.name)} · ${String(row.capacity)}人` }))} />
               <Field label="日期" value={trialDate} onChange={setTrialDate} type="date" />
             </>
           ) : mode === "outcome" ? (
             <>
-              <Field label="试听编号" value={trialBookingId} onChange={setTrialBookingId} />
+              <SelectField label="试听学生" value={trialBookingId} onChange={setTrialBookingId} options={trialRows.map((row) => ({ value: String(row.id), label: `${String(row.student)} · ${String(row.sessionDate ?? "")}` }))} />
             </>
           ) : mode === "convert" ? (
             <>
-              <Field label="咨询编号" value={conversionInquiryId} onChange={setConversionInquiryId} />
-              <Field label="班级编号" value={classSeriesId} onChange={setClassSeriesId} />
+              <SelectField label="试听完成学生" value={conversionInquiryId} onChange={setConversionInquiryId} options={inquiryRows.filter((row) => row.status === "trial_completed").map((row) => ({ value: String(row.id), label: String(row.student) }))} />
+              <SelectField label="目标班级" value={classSeriesId} onChange={setClassSeriesId} options={resources.filter((row) => row.type === "class").map((row) => ({ value: String(row.id), label: `${String(row.name)} · ${String(row.subject)}` }))} />
             </>
           ) : (
             <>
-              <Field label="学生编号" value={renewalStudentId} onChange={setRenewalStudentId} />
+              <SelectField label="低课时学生" value={renewalStudentId} onChange={setRenewalStudentId} options={lowBalanceRows.map((row) => ({ value: String(row.studentId), label: `${String(row.student)} · ${String(row.credits)}课时` }))} />
               <Field label="续费课时" value={renewalCredits} onChange={setRenewalCredits} type="number" />
               <Field label="金额（AUD）" value={renewalAmount} onChange={setRenewalAmount} type="number" />
             </>
@@ -589,6 +637,9 @@ function ManagerActions({ data, run, busy }: {
   const refund = data.sections.find((section) => section.id === "refunds")?.rows.find((row) => row.status === "requested");
   const period = data.sections.find((section) => section.id === "payroll-periods")?.rows[0];
   const support = data.sections.find((section) => section.id === "support")?.rows.find((row) => row.status === "requested");
+  const admins = data.sections.find((section) => section.id === "admin-workloads")?.rows ?? [];
+  const [transferStudentId, setTransferStudentId] = useState("");
+  const [newOwnerId, setNewOwnerId] = useState(String(admins[0]?.id ?? ""));
   return (
     <Card>
       <CardHeader><CardTitle>审批队列</CardTitle></CardHeader>
@@ -603,6 +654,17 @@ function ManagerActions({ data, run, busy }: {
           <ShieldAlert />批准独立的限时支持
         </Button>
         {!support ? <p className="text-sm text-muted-foreground">暂无待审批的支持申请</p> : null}
+        <div className="border-t pt-4">
+          <p className="mb-3 text-sm font-semibold">转交学生负责人</p>
+          <Field label="学生编号" value={transferStudentId} onChange={setTransferStudentId} />
+          <label className="mt-3 block space-y-2 text-sm font-medium">
+            <span>新负责人</span>
+            <select className="h-10 w-full rounded-md border bg-white px-3 font-normal" value={newOwnerId} onChange={(event) => setNewOwnerId(event.target.value)}>
+              {admins.map((admin) => <option key={String(admin.id)} value={String(admin.id)}>{String(admin.admin)}</option>)}
+            </select>
+          </label>
+          <Button className="mt-3 w-full" disabled={busy || !transferStudentId || !newOwnerId} onClick={() => void run({ action: "transfer_student_owner", studentId: transferStudentId, newOwnerId })}>确认转交</Button>
+        </div>
       </CardContent>
     </Card>
   );
@@ -915,7 +977,19 @@ export function PlatformWorkspace({ role, viewer }: {
           </>
         ) : null}
       </div>
-      <StudentDetailSheet open={studentDetailOpen} onOpenChange={setStudentDetailOpen} detail={studentDetail} loading={studentDetailLoading} error={studentDetailError} />
+      <StudentDetailSheet
+        open={studentDetailOpen}
+        onOpenChange={setStudentDetailOpen}
+        detail={studentDetail}
+        loading={studentDetailLoading}
+        error={studentDetailError}
+        classes={data?.sections.find((section) => section.id === "resources")?.rows.filter((row) => row.type === "class") ?? []}
+        busy={busy}
+        run={async (command) => {
+          await run(command);
+          setStudentDetailOpen(false);
+        }}
+      />
       <Toaster position="bottom-center" />
     </main>
   );

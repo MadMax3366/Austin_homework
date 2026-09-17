@@ -124,7 +124,7 @@ SELECT
   printf('staff_admin_scale_%02d', n),
   printf('demo_admin_scale_%02d', n),
   printf('operations%02d@example.test', n),
-  printf('Operations Admin %02d', n),
+  printf('运营 %02d', n),
   'admin',
   1
 FROM seq;
@@ -140,7 +140,7 @@ SELECT
   printf('staff_teacher_scale_%02d', n),
   printf('demo_teacher_scale_%02d', n),
   printf('teacher%02d@example.test', n),
-  printf('Teacher %02d', n),
+  printf('教师 %02d', n),
   'teacher',
   1
 FROM seq;
@@ -179,8 +179,8 @@ INSERT OR IGNORE INTO students
   (id, legal_name, preferred_name, date_of_birth, lifecycle_status, owner_admin_id)
 SELECT
   printf('student_scale_%04d', n),
-  printf('Scale Student %04d', n),
-  printf('Student %04d', n),
+  printf('学员 %04d', n),
+  printf('学员 %04d', n),
   printf('%04d-%02d-%02d', 2010 + (n % 6), 1 + (n % 12), 1 + (n % 27)),
   CASE
     WHEN n % 29 = 0 THEN 'paused'
@@ -208,7 +208,7 @@ WITH RECURSIVE seq(n) AS (
 INSERT OR IGNORE INTO guardians (id, full_name, email, phone)
 SELECT
   printf('guardian_scale_%04d', n),
-  printf('Guardian %04d', n),
+  printf('家长 %04d', n),
   printf('guardian%04d@example.test', n),
   printf('04%08d', n)
 FROM seq;
@@ -244,7 +244,7 @@ SELECT
     WHEN 'student_02' THEN 3
     WHEN 'student_03' THEN 14
     WHEN 'student_04' THEN 1
-    ELSE 10
+    ELSE 1 + ((CAST(substr(student.id, -2) AS INTEGER) * 7) % 23)
   END,
   'seed',
   'opening_balance',
@@ -261,14 +261,17 @@ SELECT
   'credit_opening_' || student.id,
   account.id,
   'purchase',
-  4 + (CAST(substr(student.id, -4) AS INTEGER) % 13),
+  ((CAST(substr(student.id, -4) AS INTEGER) * 17)
+    + (CAST(substr(student.id, -4) AS INTEGER) / 7) * 3) % 25,
   'seed',
   'opening_balance',
   'Synthetic scale opening balance',
   student.owner_admin_id
 FROM students AS student
 JOIN credit_accounts AS account ON account.student_id=student.id
-WHERE student.id LIKE 'student_scale_%';
+WHERE student.id LIKE 'student_scale_%'
+  AND (((CAST(substr(student.id, -4) AS INTEGER) * 17)
+    + (CAST(substr(student.id, -4) AS INTEGER) / 7) * 3) % 25) <> 0;
 
 INSERT OR IGNORE INTO class_series
   (id, name, subject, room, weekday, local_start_time, local_end_time, default_teacher_id, capacity, active)
@@ -467,7 +470,7 @@ SELECT
   'org_austin',
   printf('demo_admin_scale_%02d', n),
   printf('operations%02d@example.test', n),
-  printf('Operations Admin %02d', n),
+  printf('运营 %02d', n),
   'active'
 FROM seq;
 
@@ -488,7 +491,7 @@ SELECT
   'org_austin',
   printf('demo_teacher_scale_%02d', n),
   printf('teacher%02d@example.test', n),
-  printf('Teacher %02d', n),
+  printf('教师 %02d', n),
   'active'
 FROM seq;
 
@@ -611,18 +614,19 @@ SELECT
   printf('每周固定班%02d', n),
   CASE n % 3 WHEN 0 THEN '数学' WHEN 1 THEN '英语' ELSE '科学' END,
   printf('扩展教室%02d', 1 + ((n - 1) % 8)),
-  1 + ((n - 1) % 6),
-  printf('%02d:00', 9 + ((n - 1) % 8)),
-  printf('%02d:00', 10 + ((n - 1) % 8)),
+  1 + CAST((n - 5) / 10 AS INTEGER),
+  printf('%02d:00', 8 + ((n - 5) % 10)),
+  printf('%02d:00', 9 + ((n - 5) % 10)),
   'regular',
-  CASE 1 + ((n - 1) % 20)
-    WHEN 1 THEN 'staff_teacher_mei'
-    WHEN 2 THEN 'staff_teacher_arjun'
-    ELSE printf('staff_teacher_scale_%02d', 1 + ((n - 1) % 20))
-  END,
-  14,
+  printf('staff_teacher_scale_%02d', 3 + ((n - 5) % 18)),
+  30,
   1
 FROM seq;
+
+UPDATE class_series
+SET weekday=${weekday},local_start_time='${active.start}',local_end_time='${active.end}',
+    default_teacher_id='staff_teacher_scale_20',room='扩展教室08'
+WHERE id='series_scale_60';
 
 INSERT OR IGNORE INTO class_series_programs (class_series_id,program_id)
 SELECT
@@ -634,6 +638,73 @@ SELECT
   END
 FROM class_series AS series
 WHERE series.id LIKE 'series_scale_%';
+
+INSERT OR IGNORE INTO enrollments
+  (id,student_id,class_series_id,starts_on,status)
+SELECT
+  'enrol_scale_primary_' || substr(student.id,-4),
+  student.id,
+  printf('series_scale_%02d', 5 + ((CAST(substr(student.id,-4) AS INTEGER) - 31) % 56)),
+  '${weekStart}',
+  'active'
+FROM students student
+WHERE student.id LIKE 'student_scale_%'
+  AND student.lifecycle_status='active';
+
+INSERT OR IGNORE INTO enrollments
+  (id,student_id,class_series_id,starts_on,status)
+SELECT
+  'enrol_scale_secondary_' || substr(student.id,-4),
+  student.id,
+  printf(
+    'series_scale_%02d',
+    5 + (((CAST(substr(student.id,-4) AS INTEGER) - 31) % 56 + 10) % 56)
+  ),
+  '${weekStart}',
+  'active'
+FROM students student
+WHERE student.id LIKE 'student_scale_%'
+  AND student.lifecycle_status='active'
+  AND CAST(substr(student.id,-4) AS INTEGER) % 12 = 0;
+
+INSERT OR IGNORE INTO lesson_sessions
+  (id,class_series_id,teacher_id,session_date,local_start_time,local_end_time,
+   session_kind,status)
+SELECT
+  'session_' || series.id || '_' ||
+    date('${weekStart}', printf('+%d days',series.weekday-1)),
+  series.id,
+  series.default_teacher_id,
+  date('${weekStart}', printf('+%d days',series.weekday-1)),
+  series.local_start_time,
+  series.local_end_time,
+  'regular',
+  'scheduled'
+FROM class_series series
+WHERE series.id LIKE 'series_scale_%'
+  AND series.id<>'series_scale_60';
+
+INSERT OR IGNORE INTO session_participants
+  (id,lesson_session_id,student_id,enrollment_id,credit_account_id,
+   display_name,date_of_birth,is_new,source,sort_order)
+SELECT
+  'participant_' || session.id || '_' || student.id,
+  session.id,
+  student.id,
+  enrollment.id,
+  account.id,
+  COALESCE(student.preferred_name,student.legal_name),
+  student.date_of_birth,
+  0,
+  'enrollment',
+  ROW_NUMBER() OVER (PARTITION BY session.id ORDER BY student.legal_name)
+FROM enrollments enrollment
+JOIN students student ON student.id=enrollment.student_id
+JOIN credit_accounts account ON account.student_id=student.id
+JOIN lesson_sessions session ON session.class_series_id=enrollment.class_series_id
+WHERE enrollment.id LIKE 'enrol_scale_%'
+  AND enrollment.status='active'
+  AND session.session_date BETWEEN '${weekStart}' AND date('${weekStart}','+6 days');
 
 UPDATE students SET lifecycle_status='prospect'
 WHERE id IN ('student_26','student_27','student_28','student_29','student_30');
@@ -779,11 +850,51 @@ VALUES
   ('order_pending_seed','org_austin','student_01','account_demo','credit_top_up','pending',
    24000,4,'AUD','Four lesson renewal package',NULL);
 
+INSERT OR IGNORE INTO orders
+  (id,organization_id,student_id,created_by_account_id,order_type,status,
+   amount_cents,credit_quantity,currency,description,paid_at)
+SELECT
+  'order_scale_' || substr(student.id,-4),
+  'org_austin',
+  student.id,
+  CASE student.owner_admin_id
+    WHEN 'staff_admin_sofia' THEN 'account_login_operations'
+    WHEN 'staff_admin_liam' THEN 'account_operations_02'
+    ELSE 'account_operations_' || substr(student.owner_admin_id,-2)
+  END,
+  'credit_top_up',
+  CASE WHEN CAST(substr(student.id,-4) AS INTEGER) % 3 = 0 THEN 'paid' ELSE 'pending' END,
+  (4 + (CAST(substr(student.id,-4) AS INTEGER) % 9)) * 6000,
+  4 + (CAST(substr(student.id,-4) AS INTEGER) % 9),
+  'AUD',
+  '课时续费',
+  CASE WHEN CAST(substr(student.id,-4) AS INTEGER) % 3 = 0 THEN CURRENT_TIMESTAMP ELSE NULL END
+FROM students student
+WHERE student.id LIKE 'student_scale_%'
+  AND (
+    CAST(substr(student.id,-4) AS INTEGER) % 3 = 0
+    OR CAST(substr(student.id,-4) AS INTEGER) % 5 = 0
+  );
+
 INSERT OR IGNORE INTO payment_transactions
   (id,order_id,provider,provider_event_id,transaction_type,status,amount_cents,raw_reference)
 VALUES
   ('payment_seed','order_paid_seed','sandbox','seed_payment_event','payment','succeeded',
    36000,'Synthetic provider reference');
+
+INSERT OR IGNORE INTO payment_transactions
+  (id,order_id,provider,provider_event_id,transaction_type,status,amount_cents,raw_reference)
+SELECT
+  'payment_' || orders.id,
+  orders.id,
+  'sandbox',
+  'seed_' || orders.id,
+  'payment',
+  'succeeded',
+  orders.amount_cents,
+  'Synthetic scale payment'
+FROM orders
+WHERE orders.id LIKE 'order_scale_%' AND orders.status='paid';
 
 INSERT OR IGNORE INTO credit_transactions
   (id,account_id,kind,quantity,source_type,source_id,note,created_by_id)
@@ -791,17 +902,48 @@ VALUES
   ('credit_order_paid_seed','credits_student_01','purchase',6,'order','order_paid_seed',
    'Paid lesson-credit order','staff_admin_sofia');
 
+INSERT OR IGNORE INTO credit_transactions
+  (id,account_id,kind,quantity,source_type,source_id,note,created_by_id)
+SELECT
+  'credit_' || orders.id,
+  account_record.id,
+  'purchase',
+  orders.credit_quantity,
+  'order',
+  orders.id,
+  '课时续费到账',
+  student.owner_admin_id
+FROM orders
+JOIN students student ON student.id=orders.student_id
+JOIN credit_accounts account_record ON account_record.student_id=student.id
+WHERE orders.id LIKE 'order_scale_%' AND orders.status='paid';
+
 INSERT OR IGNORE INTO refunds
   (id,order_id,requested_by_id,status,amount_cents,reason)
 VALUES
   ('refund_requested_seed','order_paid_seed','staff_admin_sofia','requested',36000,
    'Guardian requested cancellation before using this package');
 
+INSERT OR IGNORE INTO refunds
+  (id,order_id,requested_by_id,status,amount_cents,reason)
+SELECT
+  'refund_' || orders.id,
+  orders.id,
+  student.owner_admin_id,
+  'requested',
+  orders.amount_cents,
+  '家长申请退还未使用课时'
+FROM orders
+JOIN students student ON student.id=orders.student_id
+WHERE orders.id LIKE 'order_scale_%'
+  AND orders.status='paid'
+  AND CAST(substr(student.id,-4) AS INTEGER) % 291 = 0;
+
 INSERT OR IGNORE INTO messages
   (id,organization_id,student_id,guardian_id,created_by_id,channel,subject,body,status,sent_at)
 VALUES
   ('message_welcome_seed','org_austin','student_01','guardian_01','staff_admin_sofia',
-   'in_app','Welcome','Your next class and current balance are available in the portal.',
+   'in_app','欢迎加入','您可以在门户查看下节课程和剩余课时。',
    'sent',CURRENT_TIMESTAMP);
 
 INSERT OR IGNORE INTO integration_configs

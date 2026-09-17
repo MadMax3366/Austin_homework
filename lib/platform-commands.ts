@@ -559,6 +559,182 @@ async function createOrder(
   return { action: input.action, entityId: orderId, message: "续费订单已创建，等待支付。" };
 }
 
+async function enrollStudent(
+  context: CommandContext,
+  input: Extract<PlatformCommandInput, { action: "enroll_student" }>,
+): Promise<PlatformCommandResult> {
+  allow(context, ["operations_admin", "manager_admin"]);
+  await assertStudentAccess(context, input.studentId);
+  const actorId = requireStaffId(context);
+  const db = getD1();
+  const student = await db.prepare(
+    `SELECT student.id,student.legal_name AS legalName,
+            student.preferred_name AS preferredName,student.date_of_birth AS dateOfBirth,
+            account_record.id AS creditAccountId
+     FROM students student
+     JOIN credit_accounts account_record ON account_record.student_id=student.id
+     WHERE student.id=? AND student.lifecycle_status IN ('prospect','active','paused')
+     LIMIT 1`,
+  ).bind(input.studentId).first<{
+    id: string; legalName: string; preferredName: string | null;
+    dateOfBirth: string; creditAccountId: string;
+  }>();
+  if (!student) throw new AppError(404, "STUDENT_NOT_FOUND", "未找到可报名的学生。");
+  const targetClass = await db.prepare(
+    `SELECT id,weekday,local_start_time AS startTime,local_end_time AS endTime,
+            capacity
+     FROM class_series WHERE id=? AND active=1 AND session_kind='regular' LIMIT 1`,
+  ).bind(input.classSeriesId).first<{
+    id: string; weekday: number; startTime: string; endTime: string; capacity: number;
+  }>();
+  if (!targetClass) throw new AppError(404, "CLASS_NOT_FOUND", "未找到目标班级。");
+  const existing = await db.prepare(
+    `SELECT id FROM enrollments
+     WHERE student_id=? AND class_series_id=? AND status='active' LIMIT 1`,
+  ).bind(student.id, targetClass.id).first<{ id: string }>();
+  if (existing) throw new AppError(409, "ALREADY_ENROLLED", "学生已在该班级中。");
+  const conflict = await db.prepare(
+    `SELECT series.id,series.name,series.local_start_time AS startTime,
+            series.local_end_time AS endTime
+     FROM enrollments enrollment
+     JOIN class_series series ON series.id=enrollment.class_series_id
+     WHERE enrollment.student_id=? AND enrollment.status='active'
+       AND series.active=1 AND series.weekday=?
+       AND series.local_start_time<? AND ?<series.local_end_time
+     LIMIT 1`,
+  ).bind(
+    student.id,
+    targetClass.weekday,
+    targetClass.endTime,
+    targetClass.startTime,
+  ).first<Record<string, string>>();
+  if (conflict) {
+    throw new AppError(409, "STUDENT_SCHEDULE_CONFLICT", "学生与现有班级时间冲突。", conflict);
+  }
+  const classCount = await db.prepare(
+    `SELECT COUNT(*) AS count FROM enrollments
+     WHERE class_series_id=? AND status='active'`,
+  ).bind(targetClass.id).first<{ count: number }>();
+  if (Number(classCount?.count ?? 0) >= Number(targetClass.capacity)) {
+    throw new AppError(409, "CLASS_AT_CAPACITY", "目标班级已满员。");
+  }
+
+  const sessions = await db.prepare(
+    `SELECT id FROM lesson_sessions
+     WHERE class_series_id=? AND status='scheduled'
+       AND session_date>=? AND roster_frozen_at IS NULL
+     ORDER BY session_date`,
+  ).bind(targetClass.id, melbourneDate()).all<{ id: string }>();
+  const enrollmentId = makeId("enrolment");
+  const statements: D1PreparedStatement[] = [
+    db.prepare(
+      `INSERT INTO enrollments (id,student_id,class_series_id,starts_on,status)
+       VALUES (?,?,?,?,'active')`,
+    ).bind(enrollmentId, student.id, targetClass.id, melbourneDate()),
+    db.prepare(
+      `UPDATE students SET lifecycle_status='active',updated_at=CURRENT_TIMESTAMP
+       WHERE id=?`,
+    ).bind(student.id),
+  ];
+  for (const session of sessions.results) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO session_participants
+          (id,lesson_session_id,student_id,enrollment_id,credit_account_id,
+           display_name,date_of_birth,is_new,source,sort_order)
+         VALUES (?,?,?,?,?,?,?,0,'enrollment',999)`,
+      ).bind(
+        `participant_${session.id}_${student.id}`,
+        session.id,
+        student.id,
+        enrollmentId,
+        student.creditAccountId,
+        student.preferredName ?? student.legalName,
+        student.dateOfBirth,
+      ),
+    );
+  }
+  statements.push(
+    auditStatement(actorId, "enrollment.created", "enrollment", enrollmentId, {
+      studentId: student.id,
+      classSeriesId: targetClass.id,
+    }),
+  );
+  await db.batch(statements);
+  return { action: input.action, entityId: enrollmentId, message: "学生已加入班级。" };
+}
+
+async function endEnrollment(
+  context: CommandContext,
+  input: Extract<PlatformCommandInput, { action: "end_enrollment" }>,
+): Promise<PlatformCommandResult> {
+  allow(context, ["operations_admin", "manager_admin"]);
+  const actorId = requireStaffId(context);
+  const enrollment = await getD1().prepare(
+    `SELECT id,student_id AS studentId,class_series_id AS classSeriesId,status
+     FROM enrollments WHERE id=? LIMIT 1`,
+  ).bind(input.enrollmentId).first<{
+    id: string; studentId: string; classSeriesId: string; status: string;
+  }>();
+  if (!enrollment) throw new AppError(404, "ENROLLMENT_NOT_FOUND", "未找到班级报名记录。");
+  await assertStudentAccess(context, enrollment.studentId);
+  if (enrollment.status !== "active") {
+    throw new AppError(409, "ENROLLMENT_ALREADY_ENDED", "该班级报名已结束。");
+  }
+  await getD1().batch([
+    getD1().prepare(
+      `UPDATE enrollments SET status='ended',ends_on=?,updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND status='active'`,
+    ).bind(melbourneDate(), enrollment.id),
+    getD1().prepare(
+      `UPDATE session_participants SET removed_at=CURRENT_TIMESTAMP
+       WHERE enrollment_id=? AND removed_at IS NULL
+         AND lesson_session_id IN (
+           SELECT id FROM lesson_sessions
+           WHERE status='scheduled' AND session_date>=? AND roster_frozen_at IS NULL
+         )`,
+    ).bind(enrollment.id, melbourneDate()),
+    auditStatement(actorId, "enrollment.ended", "enrollment", enrollment.id, {
+      reason: input.reason,
+    }),
+  ]);
+  return { action: input.action, entityId: enrollment.id, message: "学生已退出该班级。" };
+}
+
+async function transferStudentOwner(
+  context: CommandContext,
+  input: Extract<PlatformCommandInput, { action: "transfer_student_owner" }>,
+): Promise<PlatformCommandResult> {
+  allow(context, ["manager_admin"]);
+  const actorId = requireStaffId(context);
+  const owner = await getD1().prepare(
+    `SELECT id FROM staff_users WHERE id=? AND role='admin' AND active=1 LIMIT 1`,
+  ).bind(input.newOwnerId).first<{ id: string }>();
+  if (!owner) throw new AppError(422, "OWNER_UNAVAILABLE", "目标运营账号不可用。");
+  const student = await getD1().prepare(
+    `SELECT id,owner_admin_id AS ownerAdminId FROM students WHERE id=? LIMIT 1`,
+  ).bind(input.studentId).first<{ id: string; ownerAdminId: string | null }>();
+  if (!student) throw new AppError(404, "STUDENT_NOT_FOUND", "未找到该学生。");
+  await getD1().batch([
+    getD1().prepare(
+      `UPDATE students SET owner_admin_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+    ).bind(owner.id, student.id),
+    getD1().prepare(
+      `UPDATE inquiries SET owner_admin_id=?,updated_at=CURRENT_TIMESTAMP
+       WHERE student_id=? AND status NOT IN ('won','lost')`,
+    ).bind(owner.id, student.id),
+    getD1().prepare(
+      `UPDATE follow_up_tasks SET assignee_id=?,updated_at=CURRENT_TIMESTAMP
+       WHERE student_id=? AND status='open'`,
+    ).bind(owner.id, student.id),
+    auditStatement(actorId, "student.owner_transferred", "student", student.id, {
+      fromOwnerId: student.ownerAdminId,
+      toOwnerId: owner.id,
+    }),
+  ]);
+  return { action: input.action, entityId: student.id, message: "学生负责人已更新。" };
+}
+
 async function sandboxPayOrder(
   context: CommandContext,
   input: Extract<PlatformCommandInput, { action: "sandbox_pay_order" }>,
@@ -1039,6 +1215,9 @@ export async function executePlatformCommand(
       case "record_trial_outcome": return await recordTrialOutcome(context, input);
       case "convert_inquiry": return await convertInquiry(context, input);
       case "create_order": return await createOrder(context, input);
+      case "enroll_student": return await enrollStudent(context, input);
+      case "end_enrollment": return await endEnrollment(context, input);
+      case "transfer_student_owner": return await transferStudentOwner(context, input);
       case "sandbox_pay_order": return await sandboxPayOrder(context, input);
       case "complete_follow_up": return await completeFollowUp(context, input);
       case "request_refund": return await requestRefund(context, input);

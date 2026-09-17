@@ -172,6 +172,7 @@ for (const role of ["operations_admin", "manager_admin", "student", "guardian", 
     assert.equal(overview.metrics.find((metric) => metric.label === "全机构学生")?.value, 1000);
     assert.equal(students?.totalRows, 1000);
     assert.equal(students?.rows.length, 25);
+    assert.ok(new Set(students.rows.map((row) => Number(row.credits))).size >= 5);
     assert.equal(workloads?.rows.length, 10);
     assert.ok(workloads.rows.every((row) => Number(row.students) === 100));
   }
@@ -207,6 +208,15 @@ assert.equal(studentDetail.student.id, "student_01");
 assert.ok(studentDetail.guardians.length >= 1);
 assert.ok(studentDetail.enrollments.length >= 1);
 assert.ok(studentDetail.schedule.length >= 3);
+
+const scaleStudentDetail = await call(
+  "Operations sees realistic class, teacher, schedule, balance and order data",
+  "/api/platform/students/student_scale_0603",
+);
+assert.notEqual(Number(scaleStudentDetail.student.credits), 10);
+assert.ok(scaleStudentDetail.enrollments.length >= 1);
+assert.ok(scaleStudentDetail.schedule.length >= 1);
+assert.ok(scaleStudentDetail.orders.length >= 1);
 
 await call(
   "Student account cannot open operations student detail",
@@ -400,6 +410,40 @@ await command("Operations prepares renewal for owned low-credit student", "opera
   creditQuantity: 8,
   amountCents: 48000,
   description: "Eight lesson renewal prepared by operations",
+});
+
+const extraEnrollment = await command("Operations adds an existing student to a second non-conflicting class", "operations_admin", {
+  action: "enroll_student",
+  studentId: "student_01",
+  classSeriesId: "series_scale_05",
+});
+await command("Duplicate active class enrolment is rejected", "operations_admin", {
+  action: "enroll_student",
+  studentId: "student_01",
+  classSeriesId: "series_scale_05",
+}, 409);
+await command("Recurring class-time conflict is rejected", "operations_admin", {
+  action: "enroll_student",
+  studentId: "student_01",
+  classSeriesId: "series_scale_60",
+}, 409);
+await command("Operations ends an active class enrolment", "operations_admin", {
+  action: "end_enrollment",
+  enrollmentId: extraEnrollment.entityId,
+  reason: "Family changed weekly availability",
+});
+
+await command("Manager transfers a student to a new operator", "manager_admin", {
+  action: "transfer_student_owner",
+  studentId: "student_scale_0400",
+  newOwnerId: "staff_admin_sofia",
+});
+await command("New owner can prepare the transferred student's renewal", "operations_admin", {
+  action: "create_order",
+  studentId: "student_scale_0400",
+  creditQuantity: 4,
+  amountCents: 24000,
+  description: "Transferred student renewal",
 });
 await command("Operations cannot modify another owner's student", "operations_admin", {
   action: "create_order",

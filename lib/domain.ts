@@ -114,6 +114,21 @@ export const platformCommandSchema = z.discriminatedUnion("action", [
     description: z.string().trim().min(2).max(240),
   }),
   strictCommand({
+    action: z.literal("enroll_student"),
+    studentId: idField,
+    classSeriesId: idField,
+  }),
+  strictCommand({
+    action: z.literal("end_enrollment"),
+    enrollmentId: idField,
+    reason: noteField,
+  }),
+  strictCommand({
+    action: z.literal("transfer_student_owner"),
+    studentId: idField,
+    newOwnerId: idField,
+  }),
+  strictCommand({
     action: z.literal("sandbox_pay_order"),
     orderId: idField,
     providerEventId: idField,
