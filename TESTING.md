@@ -6,7 +6,7 @@
 |---|---|---|
 | 领域／HTTP 单测 | `npm test` | Zod、计费、日期、body 实际字节、same-origin、错误契约 |
 | SQLite 契约 | `npm test` | 全迁移、0006 升级、FK/CHECK/UNIQUE/trigger、状态机、不可变性 |
-| 六角色 HTTP E2E | `npm run test:e2e` | 生产构建上的页面、overview、15 类命令和老师专用流程 |
+| 六角色 HTTP E2E | `npm run test:e2e` | 生产构建上的页面、overview、15 类平台命令、FAQ triage 和老师专用流程 |
 | 静态与构建 | `npm run lint && npx tsc --noEmit && npm run build` | Client/Server 边界、类型、全部路由产物 |
 | 许可边界 | `npm run check:license` | 专有声明、package metadata 和两份第三方 MIT license 哈希 |
 
