@@ -43,12 +43,12 @@
 - React 19、TypeScript、Vinext／Next Route Handlers、Tailwind、shadcn/ui。
 - Cloudflare D1／SQLite、Drizzle schema 与顺序迁移。
 - ChatGPT Identity 作为身份提供方；内部 `AccountRoleAssignment` 做授权。
-- 可选 OpenAI structured output；无 key 时使用确定性本地 fallback。
+- 可选 Gemini 原生 structured output；无 key 时使用确定性本地 fallback。
 - Payment 使用可执行 sandbox；Bank、Email、SMS、WeChat 当前只有配置／消息／outbox 边界，没有伪装成已接通的渠道。
 
 ## 本地运行
 
-要求 Node.js 22.13+。支持 Apple Silicon 和 Intel Mac，不需要 Docker、Cloudflare 登录或 OpenAI key。
+要求 Node.js 22.13+。支持 Apple Silicon 和 Intel Mac，不需要 Docker、Cloudflare 登录或 Gemini key。
 
 ```bash
 git clone https://github.com/MadMax3366/Austin_homework.git
@@ -80,7 +80,7 @@ npm run db:seed
 npm run dev
 ```
 
-可选真实 LLM：复制 `.env.example` 为 `.dev.vars` 并填写 key。没有 key 时，教师反馈使用本地 fallback，FAQ 使用批准知识确定性匹配或转人工。
+可选真实 LLM：复制 `.env.example` 为 `.dev.vars`，填写仅供服务端使用的 `GEMINI_API_KEY`；默认模型是 `gemini-3.1-flash-lite`，可用 `GEMINI_MODEL` 覆盖。`.dev.vars` 已被 Git 忽略，真实密钥不得提交。没有 key 时，教师反馈使用本地 fallback，FAQ 使用批准知识确定性匹配或转人工。
 
 ```bash
 cp .env.example .dev.vars

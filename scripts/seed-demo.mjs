@@ -505,7 +505,7 @@ INSERT OR IGNORE INTO integration_configs
   (id,organization_id,integration_type,provider_name,mode,public_config_json,status,last_checked_at,updated_by_id)
 VALUES
   ('integration_identity','org_austin','identity','ChatGPT Identity','live','{}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
-  ('integration_llm','org_austin','llm','OpenAI','sandbox','{"dataPolicy":"no-training"}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
+  ('integration_llm','org_austin','llm','Google Gemini','sandbox','{"privacyControl":"redacted-before-send"}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
   ('integration_payment','org_austin','payment','SandboxPay','sandbox','{"currency":"AUD"}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
   ('integration_bank','org_austin','bank','Bank export','sandbox','{}','unknown',CURRENT_TIMESTAMP,'staff_manager_ava'),
   ('integration_email','org_austin','email','Mail sandbox','sandbox','{}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
