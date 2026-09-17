@@ -47,32 +47,45 @@
 
 ## 本地运行
 
-要求 Node.js 22.13+。
+要求 Node.js 22.13+。支持 Apple Silicon 和 Intel Mac，不需要 Docker、Cloudflare 登录或 OpenAI key。
 
 ```bash
+git clone https://github.com/MadMax3366/Austin_homework.git
+cd Austin_homework
+node --version
 npm run install:ci
+npm run demo:setup
+npm run demo
+```
+
+打开 [http://localhost:5173](http://localhost:5173)，点击 **Sign in with ChatGPT**。本地开发中间件只会设置合成账号 `seedy@sites.test` 的 HttpOnly cookie，不访问真实 ChatGPT；登录后可切换六种角色并演示 Part B。
+
+`demo:setup` 会依次构建、把所有未应用迁移写入同一个 `.wrangler/state` 本地 D1，并执行可重复 Seed。再次执行是安全的：迁移会跳过已应用版本，Seed 不会重复业务数据。
+
+如果之前已经演示并修改了数据，需要恢复到初始场景，请先停止开发服务器，再运行：
+
+```bash
+npm run demo:reset
+```
+
+旧数据库不会删除，而会移动到带时间戳的 `.wrangler/state-backup-*` 目录。
+
+如需分步执行：
+
+```bash
 npm run build
-```
-
-在一个新的本地 D1 上顺序应用迁移：
-
-```bash
-for migration in drizzle/*.sql; do
-  node --import ./scripts/sites-env.mjs \
-    ./node_modules/wrangler/bin/wrangler.js d1 execute DB \
-    --local --config dist/server/wrangler.json \
-    --persist-to .wrangler/state --file "$migration"
-done
-```
-
-然后加载可重复执行的合成数据并启动：
-
-```bash
+npm run db:migrate:local
 npm run db:seed
-npm start
+npm run dev
 ```
 
-打开 [http://127.0.0.1:8787](http://127.0.0.1:8787)。本地身份为 `seedy@sites.test`，角色选择页可进入六种职责。所有姓名、联系方式、订单和交易均为合成数据；正常应用路由不会自动造数据。
+可选真实 LLM：复制 `.env.example` 为 `.dev.vars` 并填写 key。没有 key 时，教师反馈使用本地 fallback，FAQ 使用批准知识确定性匹配或转人工。
+
+```bash
+cp .env.example .dev.vars
+```
+
+`npm start` 直接运行构建后的 Worker，供托管环境和注入可信身份 header 的 HTTP E2E 使用；它不模拟本地登录，因此不要用它做 Mac 浏览器 Demo。所有姓名、联系方式、订单和交易均为合成数据；正常应用路由不会自动造数据。
 
 ## API
 

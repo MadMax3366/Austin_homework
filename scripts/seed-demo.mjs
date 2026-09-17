@@ -3,7 +3,8 @@ import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 const projectRoot = process.cwd();
-const configuredStateDirectory = process.env.AUS_D1_STATE_DIRECTORY ?? ".wrangler";
+const configuredStateDirectory =
+  process.env.AUS_D1_STATE_DIRECTORY ?? ".wrangler/state";
 const stateDirectory = isAbsolute(configuredStateDirectory)
   ? configuredStateDirectory
   : join(projectRoot, configuredStateDirectory);
