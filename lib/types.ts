@@ -21,7 +21,7 @@ export type RosterStudent = {
   age: number;
   balance: number;
   isNew: boolean;
-  attendanceStatus: AttendanceStatus;
+  attendanceStatus: AttendanceStatus | null;
   billingStatus:
     | "charged"
     | "not_charged"
@@ -51,7 +51,6 @@ export type CompleteClassResult = {
   chargedCount: number;
   absentCount: number;
   pendingCreditCount: number;
-  roster: RosterStudent[];
   idempotentReplay: boolean;
 };
 
@@ -65,6 +64,8 @@ export type ApiErrorBody = {
   error: {
     code: string;
     message: string;
+    requestId?: string;
+    retryable?: boolean;
     details: unknown;
   };
 };

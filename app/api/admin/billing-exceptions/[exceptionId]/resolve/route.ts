@@ -1,26 +1,25 @@
-import { completeClass } from "@/lib/attendance-service";
-import { completeClassSchema } from "@/lib/domain";
+import { resolveBillingException } from "@/lib/billing-service";
+import { billingResolutionSchema } from "@/lib/domain";
 import { assertSameOrigin, errorResponse, readJson } from "@/lib/http";
 import { requireStaff } from "@/lib/server-auth";
 
 export async function POST(
   request: Request,
-  context: { params: Promise<{ sessionId: string }> },
+  context: { params: Promise<{ exceptionId: string }> },
 ): Promise<Response> {
   const requestId = crypto.randomUUID();
   try {
-    const staff = await requireStaff(["teacher"]);
+    const staff = await requireStaff(["admin", "manager"]);
     assertSameOrigin(request);
-    const { sessionId } = await context.params;
+    const { exceptionId } = await context.params;
     const idempotencyKey = request.headers.get("idempotency-key") ?? "";
-    const body = completeClassSchema.parse(await readJson(request));
-    const result = await completeClass(
+    const input = billingResolutionSchema.parse(await readJson(request));
+    const result = await resolveBillingException(
       staff,
-      sessionId,
+      exceptionId,
       idempotencyKey,
-      body,
+      input,
     );
-
     return Response.json(result, {
       headers: {
         "Cache-Control": "private, no-store",

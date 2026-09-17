@@ -10,9 +10,7 @@ import {
   Clock3,
   Coins,
   LogOut,
-  Menu,
   MessageSquareText,
-  MoreHorizontal,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -21,6 +19,16 @@ import {
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,6 +58,14 @@ type Viewer = {
   signOutPath: string;
 };
 
+type AttendanceDraftStatus = AttendanceStatus | null;
+
+type WorkspaceDraft = {
+  attendance: Record<string, AttendanceDraftStatus>;
+  classNotes: string;
+  feedback: FeedbackDraft | null;
+};
+
 type ModelContextTool = {
   name: string;
   title?: string;
@@ -58,8 +74,13 @@ type ModelContextTool = {
   annotations?: {
     readOnlyHint?: boolean;
     untrustedContentHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
   };
-  execute(input: unknown): unknown | Promise<unknown>;
+  execute(
+    input: unknown,
+    options?: { signal?: AbortSignal },
+  ): unknown | Promise<unknown>;
 };
 
 declare global {
@@ -93,23 +114,73 @@ async function requestJson<T>(
   url: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
-  const payload = (await response.json()) as T | ApiErrorBody;
-  if (!response.ok) {
-    const error = payload as ApiErrorBody;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 15_000);
+  const abortFromCaller = () => controller.abort();
+  init?.signal?.addEventListener("abort", abortFromCaller, { once: true });
+
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
+    });
+    const responseText = await response.text();
+    let payload: T | ApiErrorBody | null = null;
+    if (responseText) {
+      try {
+        payload = JSON.parse(responseText) as T | ApiErrorBody;
+      } catch {
+        throw new ClientApiError(
+          "INVALID_SERVER_RESPONSE",
+          "The server returned an unreadable response.",
+          response.status,
+        );
+      }
+    }
+    if (!response.ok) {
+      const error = payload as ApiErrorBody | null;
+      throw new ClientApiError(
+        error?.error?.code ?? "REQUEST_FAILED",
+        error?.error?.message ?? "The request failed.",
+        response.status,
+      );
+    }
+    if (!payload) {
+      throw new ClientApiError(
+        "EMPTY_SERVER_RESPONSE",
+        "The server returned an empty response.",
+        response.status,
+      );
+    }
+    return payload as T;
+  } catch (error) {
+    if (error instanceof ClientApiError) throw error;
+    if (controller.signal.aborted) {
+      throw new ClientApiError(
+        timedOut ? "REQUEST_TIMEOUT" : "REQUEST_CANCELLED",
+        timedOut
+          ? "The request timed out. Your draft has been kept."
+          : "The request was cancelled.",
+        0,
+      );
+    }
     throw new ClientApiError(
-      error.error?.code ?? "REQUEST_FAILED",
-      error.error?.message ?? "The request failed.",
-      response.status,
+      "NETWORK_UNAVAILABLE",
+      "The network is unavailable. Your draft has been kept.",
+      0,
     );
+  } finally {
+    window.clearTimeout(timeout);
+    init?.signal?.removeEventListener("abort", abortFromCaller);
   }
-  return payload as T;
 }
 
 function displayDate(value: string): string {
@@ -139,7 +210,7 @@ function initials(name: string): string {
 function splitLines(value: string): string[] {
   return value
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => line.trim().slice(0, 160))
     .filter(Boolean)
     .slice(0, 4);
 }
@@ -176,14 +247,6 @@ function WorkspaceFrame({
     <main className="min-h-screen bg-[var(--canvas)] text-foreground">
       <header className="sticky top-0 z-30 border-b border-[var(--navy-800)] bg-[var(--navy-950)] text-white">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-4 px-4 sm:px-6 lg:px-8">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-white hover:bg-white/10 hover:text-white lg:hidden"
-            aria-label="Open navigation"
-          >
-            <Menu />
-          </Button>
           <div className="flex min-w-0 items-center gap-3">
             <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--cyan-400)] text-[var(--navy-950)]">
               <BookOpen className="size-[18px]" aria-hidden="true" />
@@ -211,7 +274,7 @@ function WorkspaceFrame({
               asChild
               variant="ghost"
               size="icon"
-              className="hidden text-slate-300 hover:bg-white/10 hover:text-white sm:inline-flex"
+              className="text-slate-300 hover:bg-white/10 hover:text-white"
             >
               <a href={viewer.signOutPath} target="_top" aria-label="Sign out">
                 <LogOut />
@@ -230,9 +293,10 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
   const [data, setData] = useState<TeacherWorkspaceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadErrorCode, setLoadErrorCode] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [attendance, setAttendance] = useState<
-    Record<string, AttendanceStatus>
+    Record<string, AttendanceDraftStatus>
   >({});
   const [classNotes, setClassNotes] = useState("");
   const [feedback, setFeedback] = useState<FeedbackDraft | null>(null);
@@ -242,46 +306,107 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
   const [feedbackWarning, setFeedbackWarning] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [switchOpen, setSwitchOpen] = useState(false);
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
   const idempotencyKey = useRef("");
+  const intentSessionId = useRef<string | null>(null);
+  const loadSequence = useRef(0);
+  const loadAbort = useRef<AbortController | null>(null);
+  const feedbackAbort = useRef<AbortController | null>(null);
 
   const applyWorkspace = useCallback((workspace: TeacherWorkspaceData) => {
-    setData(workspace);
-    setAttendance(
-      Object.fromEntries(
+    const session = workspace.selectedSession;
+    const serverDraft: WorkspaceDraft = {
+      attendance: Object.fromEntries(
         workspace.roster.map((student) => [
           student.id,
           student.attendanceStatus,
         ]),
       ),
-    );
-    setClassNotes(workspace.rawClassNotes);
-    setFeedback(workspace.feedback);
+      classNotes: workspace.rawClassNotes,
+      feedback: workspace.feedback,
+    };
+    let nextDraft = serverDraft;
+    let restored = false;
+    if (session?.status === "scheduled") {
+      const stored = window.sessionStorage.getItem(`aus-draft:${session.id}`);
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored) as WorkspaceDraft;
+          const rosterIds = new Set(workspace.roster.map((student) => student.id));
+          if (
+            Object.keys(parsed.attendance).every((id) => rosterIds.has(id)) &&
+            parsed.classNotes.length <= 4_000
+          ) {
+            nextDraft = parsed;
+            restored = true;
+          }
+        } catch {
+          window.sessionStorage.removeItem(`aus-draft:${session.id}`);
+        }
+      }
+    }
+
+    setData(workspace);
+    setAttendance(nextDraft.attendance);
+    setClassNotes(nextDraft.classNotes);
+    setFeedback(nextDraft.feedback);
     setFeedbackSource(null);
     setFeedbackWarning(null);
     setActionError(null);
-    idempotencyKey.current = crypto.randomUUID();
+    setDirty(restored);
+    if (
+      session &&
+      (intentSessionId.current !== session.id || !idempotencyKey.current)
+    ) {
+      idempotencyKey.current = crypto.randomUUID();
+      intentSessionId.current = session.id;
+    }
+    if (session?.status === "completed") {
+      window.sessionStorage.removeItem(`aus-draft:${session.id}`);
+    }
   }, []);
 
   const loadWorkspace = useCallback(
     async (sessionId?: string | null) => {
+      const sequence = ++loadSequence.current;
+      loadAbort.current?.abort();
+      const controller = new AbortController();
+      loadAbort.current = controller;
       setLoading(true);
       setLoadError(null);
+      setLoadErrorCode(null);
       try {
         const suffix = sessionId
           ? `?sessionId=${encodeURIComponent(sessionId)}`
           : "";
         const workspace = await requestJson<TeacherWorkspaceData>(
           `/api/workspace${suffix}`,
+          { signal: controller.signal },
         );
+        if (sequence !== loadSequence.current) return null;
         applyWorkspace(workspace);
+        return workspace;
       } catch (error) {
+        if (
+          error instanceof ClientApiError &&
+          error.code === "REQUEST_CANCELLED"
+        ) {
+          return null;
+        }
         setLoadError(
           error instanceof Error
             ? error.message
             : "Today’s classes could not be loaded.",
         );
+        setLoadErrorCode(
+          error instanceof ClientApiError ? error.code : "REQUEST_FAILED",
+        );
+        return null;
       } finally {
-        setLoading(false);
+        if (sequence === loadSequence.current) setLoading(false);
       }
     },
     [applyWorkspace],
@@ -294,10 +419,72 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
     return () => window.clearTimeout(timer);
   }, [loadWorkspace]);
 
+  useEffect(() => {
+    const session = data?.selectedSession;
+    if (!dirty || !session || session.status !== "scheduled") return;
+    const draft: WorkspaceDraft = { attendance, classNotes, feedback };
+    window.sessionStorage.setItem(
+      `aus-draft:${session.id}`,
+      JSON.stringify(draft),
+    );
+  }, [attendance, classNotes, data?.selectedSession, dirty, feedback]);
+
+  useEffect(() => {
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirty]);
+
+  useEffect(
+    () => () => {
+      loadAbort.current?.abort();
+      feedbackAbort.current?.abort();
+    },
+    [],
+  );
+
+  const requestSessionSwitch = useCallback(
+    (sessionId: string) => {
+      if (saving || generating || sessionId === data?.selectedSession?.id) return;
+      if (dirty) {
+        setPendingSessionId(sessionId);
+        setSwitchOpen(true);
+        return;
+      }
+      void loadWorkspace(sessionId);
+    },
+    [data?.selectedSession?.id, dirty, generating, loadWorkspace, saving],
+  );
+
+  const discardAndSwitch = useCallback(() => {
+    const currentId = data?.selectedSession?.id;
+    if (currentId) window.sessionStorage.removeItem(`aus-draft:${currentId}`);
+    const destination = pendingSessionId;
+    setDirty(false);
+    setSwitchOpen(false);
+    setPendingSessionId(null);
+    if (destination) void loadWorkspace(destination);
+  }, [data?.selectedSession?.id, loadWorkspace, pendingSessionId]);
+
   const billableCount = useMemo(
     () =>
-      Object.values(attendance).filter((value) => value !== "absent").length,
+      Object.values(attendance).filter(
+        (value) => value === "present" || value === "late",
+      ).length,
     [attendance],
+  );
+  const unmarkedCount = useMemo(
+    () => data?.roster.filter((student) => !attendance[student.id]).length ?? 0,
+    [attendance, data],
+  );
+  const absentCount = useMemo(
+    () =>
+      data?.roster.filter((student) => attendance[student.id] === "absent")
+        .length ?? 0,
+    [attendance, data],
   );
   const lowBalanceCount = useMemo(
     () => data?.roster.filter((student) => student.balance <= 3).length ?? 0,
@@ -307,7 +494,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
     () =>
       data?.roster.filter(
         (student) =>
-          attendance[student.id] !== "absent" && student.balance < 1,
+          (attendance[student.id] === "present" ||
+            attendance[student.id] === "late") &&
+          student.balance < 1,
       ).length ?? 0,
     [attendance, data],
   );
@@ -317,6 +506,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       records: { studentId: string; status: AttendanceStatus }[],
       rawClassNotes: string,
       feedbackDraft: FeedbackDraft | null,
+      signal?: AbortSignal,
     ) => {
       const session = data?.selectedSession;
       if (!session) throw new Error("No class is selected.");
@@ -327,6 +517,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
           `/api/sessions/${encodeURIComponent(session.id)}/complete`,
           {
             method: "POST",
+            signal,
             headers: { "Idempotency-Key": idempotencyKey.current },
             body: JSON.stringify({
               expectedVersion: session.version,
@@ -348,9 +539,40 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
               : `Class completed and ${result.chargedCount} lesson credits recorded.`,
           );
         }
+        window.sessionStorage.removeItem(`aus-draft:${session.id}`);
+        setDirty(false);
         await loadWorkspace(session.id);
         return result;
       } catch (error) {
+        if (
+          error instanceof ClientApiError &&
+          ["REQUEST_TIMEOUT", "NETWORK_UNAVAILABLE"].includes(error.code)
+        ) {
+          const reconciled = await loadWorkspace(session.id);
+          if (reconciled?.selectedSession?.status === "completed") {
+            window.sessionStorage.removeItem(`aus-draft:${session.id}`);
+            setDirty(false);
+            toast.success(
+              "The response was interrupted, but the server confirms the class was completed safely.",
+            );
+            return {
+              sessionId: session.id,
+              status: "completed" as const,
+              version: reconciled.selectedSession.version,
+              chargedCount: reconciled.roster.filter(
+                (student) => student.billingStatus === "charged",
+              ).length,
+              absentCount: reconciled.roster.filter(
+                (student) => student.attendanceStatus === "absent",
+              ).length,
+              pendingCreditCount: reconciled.roster.filter(
+                (student) =>
+                  student.billingStatus === "pending_insufficient_credit",
+              ).length,
+              idempotentReplay: true,
+            };
+          }
+        }
         const message =
           error instanceof Error ? error.message : "The class could not be saved.";
         setActionError(message);
@@ -364,10 +586,26 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
 
   async function completeVisibleClass() {
     if (!data?.selectedSession) return;
+    if (unmarkedCount > 0) {
+      setActionError(
+        `Mark every student before completing the class (${unmarkedCount} remaining).`,
+      );
+      setConfirmOpen(false);
+      return;
+    }
+    if (
+      feedback &&
+      (!feedback.summary.trim() || !feedback.guardianMessageDraft.trim())
+    ) {
+      setActionError("The feedback summary and message draft cannot be empty.");
+      setConfirmOpen(false);
+      return;
+    }
     const records = data.roster.map((student) => ({
       studentId: student.id,
-      status: attendance[student.id] ?? "present",
+      status: attendance[student.id] as AttendanceStatus,
     }));
+    setConfirmOpen(false);
     try {
       await performComplete(records, classNotes, feedback);
     } catch {
@@ -385,6 +623,10 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
     }
 
     setGenerating(true);
+    feedbackAbort.current?.abort();
+    const controller = new AbortController();
+    feedbackAbort.current = controller;
+    const requestedSessionId = session.id;
     setActionError(null);
     setFeedbackWarning(null);
     try {
@@ -392,28 +634,39 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
         "/api/feedback/draft",
         {
           method: "POST",
+          signal: controller.signal,
           body: JSON.stringify({
             sessionId: session.id,
             rawNotes: classNotes,
           }),
         },
       );
+      if (intentSessionId.current !== requestedSessionId) return;
       setFeedback(result.draft);
       setFeedbackSource(result.source);
       setFeedbackWarning(result.warning?.message ?? null);
+      setDirty(true);
       if (result.source === "fallback") {
         toast.info("AI was unavailable. An editable local draft was created.");
       } else {
         toast.success("Editable family update drafted.");
       }
     } catch (error) {
+      if (
+        error instanceof ClientApiError &&
+        error.code === "REQUEST_CANCELLED"
+      ) {
+        return;
+      }
       setActionError(
         error instanceof Error
           ? error.message
           : "A feedback draft could not be created.",
       );
     } finally {
-      setGenerating(false);
+      if (intentSessionId.current === requestedSessionId) {
+        setGenerating(false);
+      }
     }
   }
 
@@ -458,15 +711,21 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
             },
           },
           rawClassNotes: { type: "string", maxLength: 4000 },
+          confirmed: { type: "boolean", const: true },
         },
-        required: ["sessionId", "records", "rawClassNotes"],
+        required: ["sessionId", "records", "rawClassNotes", "confirmed"],
         additionalProperties: false,
       },
       annotations: {
         readOnlyHint: false,
         untrustedContentHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
       },
-      async execute(input) {
+      async execute(input, options) {
+        if (options?.signal?.aborted) {
+          throw new Error("The completion request was cancelled.");
+        }
         if (!input || typeof input !== "object") {
           throw new Error("Input must be an object.");
         }
@@ -474,9 +733,13 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
           sessionId?: unknown;
           records?: unknown;
           rawClassNotes?: unknown;
+          confirmed?: unknown;
         };
         if (candidate.sessionId !== session.id) {
           throw new Error("The requested session is not currently visible.");
+        }
+        if (candidate.confirmed !== true) {
+          throw new Error("Explicit confirmation is required.");
         }
         if (!Array.isArray(candidate.records)) {
           throw new Error("records must be an array.");
@@ -522,6 +785,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
           records,
           candidate.rawClassNotes,
           feedback,
+          options?.signal,
         );
         return {
           sessionId: result.sessionId,
@@ -554,9 +818,17 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
             <AlertTitle>Today’s workspace could not be loaded</AlertTitle>
             <AlertDescription>{loadError}</AlertDescription>
           </Alert>
-          <Button className="mt-5" onClick={() => void loadWorkspace()}>
-            <RefreshCw /> Try again
-          </Button>
+          {loadErrorCode === "AUTH_REQUIRED" ? (
+            <Button asChild className="mt-5">
+              <a href="/signin-with-chatgpt?return_to=/" target="_top">
+                Sign in again
+              </a>
+            </Button>
+          ) : (
+            <Button className="mt-5" onClick={() => void loadWorkspace()}>
+              <RefreshCw /> Try again
+            </Button>
+          )}
         </div>
       </WorkspaceFrame>
     );
@@ -590,6 +862,8 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
 
   const session = data.selectedSession;
   const completed = session.status === "completed";
+  const cancelled = session.status === "cancelled";
+  const locked = completed || cancelled;
 
   return (
     <WorkspaceFrame viewer={viewer}>
@@ -609,7 +883,8 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   ? "bg-[var(--navy-900)] hover:bg-[var(--navy-800)]"
                   : ""
               }
-              onClick={() => void loadWorkspace(item.id)}
+              disabled={saving || generating}
+              onClick={() => requestSessionSwitch(item.id)}
             >
               {displayTime(item.startTime)} · {item.subject}
             </Button>
@@ -632,7 +907,8 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     : "border-transparent hover:border-border hover:bg-slate-50"
                 }`}
                 type="button"
-                onClick={() => void loadWorkspace(item.id)}
+                disabled={saving || generating}
+                onClick={() => requestSessionSwitch(item.id)}
               >
                 <span className="flex items-center justify-between gap-2">
                   <span className="text-sm font-semibold text-[var(--navy-900)]">
@@ -686,6 +962,8 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   >
                     {completed
                       ? "Completed"
+                      : cancelled
+                        ? "Cancelled"
                       : session.timing === "active"
                         ? "In progress"
                         : session.timing === "upcoming"
@@ -708,9 +986,6 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   <span>Australia/Melbourne</span>
                 </p>
               </div>
-              <Button variant="outline" size="sm" className="w-fit" disabled>
-                <MoreHorizontal /> Class details
-              </Button>
             </div>
 
             <div className="mt-6 grid gap-3 sm:grid-cols-3">
@@ -790,9 +1065,29 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   Take attendance
                 </h2>
               </div>
-              <p className="hidden text-sm text-muted-foreground sm:block">
-                Present and late students use one lesson credit.
-              </p>
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <p className="hidden text-sm text-muted-foreground sm:block">
+                  Present and late students use one lesson credit.
+                </p>
+                {!locked && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={saving}
+                    onClick={() => {
+                      setAttendance(
+                        Object.fromEntries(
+                          data.roster.map((student) => [student.id, "present"]),
+                        ),
+                      );
+                      setDirty(true);
+                    }}
+                  >
+                    <Check /> Mark all present
+                  </Button>
+                )}
+              </div>
             </div>
 
             <div className="mt-4 overflow-hidden rounded-2xl border border-border bg-white shadow-[0_10px_30px_rgb(18_37_58/5%)]">
@@ -803,16 +1098,19 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
               </div>
               <div className="divide-y divide-border">
                 {data.roster.map((student) => {
-                  const status = attendance[student.id] ?? "present";
+                  const status = attendance[student.id] ?? null;
                   const nextBalance =
-                    completed || status === "absent"
+                    locked ||
+                    status === null ||
+                    status === "absent"
                       ? student.balance
                       : Math.max(0, student.balance - 1);
                   const pending =
-                    completed
+                    locked
                       ? student.billingStatus ===
                         "pending_insufficient_credit"
-                      : status !== "absent" && student.balance < 1;
+                      : (status === "present" || status === "late") &&
+                        student.balance < 1;
 
                   return (
                     <article
@@ -843,23 +1141,30 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                         </div>
                       </div>
 
-                      <RadioGroup
-                        value={status}
-                        disabled={completed || saving}
-                        onValueChange={(value) =>
+                      <div>
+                        {status === null && (
+                          <p className="mb-1 text-xs font-medium text-amber-700">
+                            Unmarked
+                          </p>
+                        )}
+                        <RadioGroup
+                        value={status ?? undefined}
+                        disabled={locked || saving}
+                        onValueChange={(value) => {
                           setAttendance((current) => ({
                             ...current,
                             [student.id]: value as AttendanceStatus,
-                          }))
-                        }
+                          }));
+                          setDirty(true);
+                        }}
                         className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1"
                         aria-label={`Attendance for ${student.name}`}
-                      >
+                        >
                         {statusOptions.map((option) => (
                           <label
                             key={option.value}
                             className={`rounded-md px-2.5 py-2 text-center text-sm font-medium transition ${
-                              completed || saving
+                              locked || saving
                                 ? "cursor-default"
                                 : "cursor-pointer"
                             } ${
@@ -871,11 +1176,13 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                             <RadioGroupItem
                               value={option.value}
                               className="sr-only"
+                              aria-label={`${student.name}: ${option.label}`}
                             />
                             {option.label}
                           </label>
                         ))}
-                      </RadioGroup>
+                        </RadioGroup>
+                      </div>
 
                       <div className="flex items-center justify-between gap-3 md:block md:text-right">
                         <span className="text-sm text-muted-foreground md:hidden">
@@ -918,7 +1225,10 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   size="sm"
                   type="button"
                   disabled={
-                    completed || generating || classNotes.trim().length < 8
+                    locked ||
+                    saving ||
+                    generating ||
+                    classNotes.trim().length < 8
                   }
                   onClick={() => void generateFeedback()}
                 >
@@ -944,8 +1254,17 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                 <Textarea
                   id="class-notes"
                   value={classNotes}
-                  disabled={completed}
-                  onChange={(event) => setClassNotes(event.target.value)}
+                  disabled={locked || saving}
+                  onChange={(event) => {
+                    setClassNotes(event.target.value);
+                    setDirty(true);
+                    if (feedback) {
+                      setFeedback(null);
+                      setFeedbackWarning(
+                        "The previous draft was cleared because the source note changed.",
+                      );
+                    }
+                  }}
                   className="mt-3 min-h-28 resize-y"
                   maxLength={4_000}
                   placeholder="e.g. Fractions review went well. The class needs more practice with mixed numbers…"
@@ -997,15 +1316,17 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     <Textarea
                       id="feedback-summary"
                       value={feedback.summary}
-                      disabled={completed}
+                      disabled={locked || saving}
+                      maxLength={500}
                       className="mt-1 min-h-20 bg-white"
-                      onChange={(event) =>
+                      onChange={(event) => {
                         setFeedback((current) =>
                           current
                             ? { ...current, summary: event.target.value }
                             : current,
-                        )
-                      }
+                        );
+                        setDirty(true);
+                      }}
                     />
                   </div>
                   <div>
@@ -1021,9 +1342,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     <Textarea
                       id="feedback-strengths"
                       value={feedback.strengths.join("\n")}
-                      disabled={completed}
+                      disabled={locked || saving}
                       className="mt-1 min-h-24 bg-white"
-                      onChange={(event) =>
+                      onChange={(event) => {
                         setFeedback((current) =>
                           current
                             ? {
@@ -1031,8 +1352,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                                 strengths: splitLines(event.target.value),
                               }
                             : current,
-                        )
-                      }
+                        );
+                        setDirty(true);
+                      }}
                     />
                   </div>
                   <div>
@@ -1048,9 +1370,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     <Textarea
                       id="feedback-next"
                       value={feedback.nextSteps.join("\n")}
-                      disabled={completed}
+                      disabled={locked || saving}
                       className="mt-1 min-h-24 bg-white"
-                      onChange={(event) =>
+                      onChange={(event) => {
                         setFeedback((current) =>
                           current
                             ? {
@@ -1058,8 +1380,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                                 nextSteps: splitLines(event.target.value),
                               }
                             : current,
-                        )
-                      }
+                        );
+                        setDirty(true);
+                      }}
                     />
                   </div>
                   <div className="sm:col-span-2">
@@ -1072,9 +1395,10 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     <Textarea
                       id="feedback-message"
                       value={feedback.guardianMessageDraft}
-                      disabled={completed}
+                      disabled={locked || saving}
+                      maxLength={900}
                       className="mt-1 min-h-28 bg-white"
-                      onChange={(event) =>
+                      onChange={(event) => {
                         setFeedback((current) =>
                           current
                             ? {
@@ -1082,8 +1406,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                                 guardianMessageDraft: event.target.value,
                               }
                             : current,
-                        )
-                      }
+                        );
+                        setDirty(true);
+                      }}
                     />
                   </div>
                 </div>
@@ -1097,10 +1422,17 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
             <div className="sticky bottom-0 z-20 -mx-4 mt-8 border-t border-border bg-white/95 px-4 py-4 shadow-[0_-10px_30px_rgb(18_37_58/6%)] backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
               <div className="mx-auto flex max-w-[1040px] flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-muted-foreground">
-                  {completed ? (
+                  {locked ? (
                     <>
-                      Attendance and credit entries are locked. Corrections use
-                      an admin reversal rather than editing ledger history.
+                      {completed
+                        ? "Attendance and credit entries are locked. Corrections use an admin reversal rather than editing ledger history."
+                        : "This class was cancelled and cannot be completed."}
+                    </>
+                  ) : unmarkedCount > 0 ? (
+                    <>
+                      <strong className="text-amber-700">{unmarkedCount}</strong>{" "}
+                      {unmarkedCount === 1 ? "student remains" : "students remain"}{" "}
+                      unmarked.
                     </>
                   ) : potentialPendingCount > 0 ? (
                     <>
@@ -1125,14 +1457,24 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                 <Button
                   size="lg"
                   className="bg-[var(--navy-900)] px-6 hover:bg-[var(--navy-800)]"
-                  disabled={completed || saving || session.timing === "upcoming"}
-                  onClick={() => void completeVisibleClass()}
+                  disabled={
+                    locked ||
+                    saving ||
+                    generating ||
+                    unmarkedCount > 0 ||
+                    session.timing === "upcoming"
+                  }
+                  onClick={() => setConfirmOpen(true)}
                 >
                   {saving ? <Spinner /> : <Check />}
                   {saving
                     ? "Completing…"
                     : completed
                       ? "Class completed"
+                      : cancelled
+                        ? "Class cancelled"
+                        : unmarkedCount > 0
+                          ? `Mark ${unmarkedCount} remaining`
                       : session.timing === "upcoming"
                         ? "Class has not started"
                         : "Complete class"}
@@ -1142,6 +1484,53 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
           </div>
         </section>
       </div>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Complete this class?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This writes immutable attendance and lesson-credit records. Teacher
+              corrections require an audited admin workflow.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid grid-cols-2 gap-3 rounded-lg bg-slate-50 p-4 text-sm sm:grid-cols-4">
+            <div><span className="text-muted-foreground">Present / late</span><strong className="block text-lg">{billableCount}</strong></div>
+            <div><span className="text-muted-foreground">Absent</span><strong className="block text-lg">{absentCount}</strong></div>
+            <div><span className="text-muted-foreground">Credits charged</span><strong className="block text-lg">{billableCount - potentialPendingCount}</strong></div>
+            <div><span className="text-muted-foreground">Admin review</span><strong className="block text-lg text-amber-700">{potentialPendingCount}</strong></div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Review attendance</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void completeVisibleClass();
+              }}
+            >
+              Confirm and complete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={switchOpen} onOpenChange={setSwitchOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard this class draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Attendance, notes, and feedback changes have not been submitted.
+              Stay here to keep editing, or discard them and switch classes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction onClick={discardAndSwitch}>
+              Discard and switch
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </WorkspaceFrame>
   );
 }

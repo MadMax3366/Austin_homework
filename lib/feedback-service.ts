@@ -6,6 +6,7 @@ import {
   AppError,
   feedbackDraftSchema,
   makeFallbackFeedback,
+  melbourneDate,
 } from "@/lib/domain";
 import type { StaffUser } from "@/lib/server-auth";
 import type { FeedbackDraftResult } from "@/lib/types";
@@ -34,17 +35,41 @@ const OUTPUT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-function redactObviousPii(value: string): string {
-  return value
+const SENSITIVE_NOTE_PATTERN =
+  /\b(diagnos(?:is|ed)|medication|medical condition|adhd|autism|self-harm)\b/i;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sanitizeForProvider(value: string, names: string[]): string {
+  let sanitized = value
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email removed]")
-    .replace(/(?:\+?61|0)[\d\s()-]{8,}/g, "[phone removed]");
+    .replace(/(?:\+?61|0)[\d\s()-]{8,}/g, "[phone removed]")
+    .replace(/\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/g, "[date removed]");
+  for (const name of names.filter((item) => item.trim().length >= 2)) {
+    sanitized = sanitized.replace(
+      new RegExp(escapeRegExp(name.trim()), "gi"),
+      "[student]",
+    );
+  }
+  return sanitized;
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function extractOutputText(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const output = (payload as { output?: unknown }).output;
   if (!Array.isArray(output)) return null;
-
   for (const item of output) {
     if (!item || typeof item !== "object") continue;
     const content = (item as { content?: unknown }).content;
@@ -63,17 +88,77 @@ function extractOutputText(payload: unknown): string | null {
   return null;
 }
 
-function warning(
+function fallback(
   code: string,
   message: string,
-  rawNotes: string,
+  safeNotes: string,
   className: string,
 ): FeedbackDraftResult {
   return {
     source: "fallback",
-    draft: makeFallbackFeedback(rawNotes, className),
+    draft: makeFallbackFeedback(safeNotes, className),
     warning: { code, message },
   };
+}
+
+async function consumeLimit(
+  scope: "teacher_minute" | "session_day",
+  subjectId: string,
+  bucketStart: string,
+  maximum: number,
+): Promise<void> {
+  const id = `${scope}:${subjectId}:${bucketStart}`;
+  const result = await getD1()
+    .prepare(
+      `INSERT INTO ai_rate_limit_buckets
+        (id, scope, subject_id, bucket_start, request_count, updated_at)
+       VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+       ON CONFLICT(scope, subject_id, bucket_start) DO UPDATE SET
+        request_count = request_count + 1,
+        updated_at = CURRENT_TIMESTAMP
+       WHERE request_count < ?
+       RETURNING request_count`,
+    )
+    .bind(id, scope, subjectId, bucketStart, maximum)
+    .first<{ requestCount: number }>();
+  if (!result) {
+    throw new AppError(
+      429,
+      "AI_RATE_LIMITED_LOCAL",
+      "Too many feedback drafts were requested. Please wait and try again.",
+    );
+  }
+}
+
+async function recordGeneration(args: {
+  actorId: string;
+  sessionId: string;
+  inputHash: string;
+  result: FeedbackDraftResult;
+  latencyMs: number;
+}): Promise<void> {
+  try {
+    await getD1()
+      .prepare(
+        `INSERT INTO ai_generations
+          (id, actor_id, lesson_session_id, input_hash, source,
+           status, error_code, latency_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        args.actorId,
+        args.sessionId,
+        args.inputHash,
+        args.result.source,
+        args.result.source === "ai" ? "succeeded" : "fallback",
+        args.result.warning?.code ?? null,
+        args.latencyMs,
+      )
+      .run();
+  } catch (error) {
+    console.error("AI generation metadata could not be recorded", error);
+  }
 }
 
 export async function draftFeedback(
@@ -89,17 +174,17 @@ export async function draftFeedback(
     );
   }
 
-  const session = await getD1()
+  const db = getD1();
+  const session = await db
     .prepare(
-      `SELECT cs.name AS className, ls.teacher_id AS teacherId
+      `SELECT cs.name AS className, ls.teacher_id AS teacherId, ls.status
        FROM lesson_sessions ls
        JOIN class_series cs ON cs.id = ls.class_series_id
        WHERE ls.id = ?
        LIMIT 1`,
     )
     .bind(sessionId)
-    .first<{ className: string; teacherId: string }>();
-
+    .first<{ className: string; teacherId: string; status: string }>();
   if (!session) {
     throw new AppError(404, "SESSION_NOT_FOUND", "Class session not found.");
   }
@@ -110,20 +195,67 @@ export async function draftFeedback(
       "You are not assigned to this class session.",
     );
   }
-
-  if (!env.OPENAI_API_KEY) {
-    return warning(
-      "AI_NOT_CONFIGURED",
-      "AI is not configured, so a safe editable draft was created locally.",
-      rawNotes,
-      session.className,
+  if (session.status !== "scheduled") {
+    throw new AppError(
+      409,
+      "SESSION_NOT_EDITABLE",
+      "Feedback can only be drafted for a scheduled class.",
     );
   }
 
-  const safeNotes = redactObviousPii(rawNotes);
+  const names = await db
+    .prepare(
+      `SELECT display_name AS displayName
+       FROM session_participants
+       WHERE lesson_session_id = ? AND removed_at IS NULL`,
+    )
+    .bind(sessionId)
+    .all<{ displayName: string }>();
+  const safeNotes = sanitizeForProvider(
+    rawNotes,
+    names.results.map((row) => row.displayName),
+  );
+  const startedAt = Date.now();
+  const inputHash = await sha256(`${sessionId}:${safeNotes}`);
+  const minuteBucket = new Date().toISOString().slice(0, 16);
+
+  await consumeLimit("teacher_minute", staff.id, minuteBucket, 5);
+  await consumeLimit("session_day", sessionId, melbourneDate(), 20);
+
+  const finish = async (result: FeedbackDraftResult) => {
+    await recordGeneration({
+      actorId: staff.id,
+      sessionId,
+      inputHash,
+      result,
+      latencyMs: Date.now() - startedAt,
+    });
+    return result;
+  };
+
+  if (SENSITIVE_NOTE_PATTERN.test(rawNotes)) {
+    return finish(
+      fallback(
+        "AI_SENSITIVE_CONTENT",
+        "Sensitive information was detected, so no external AI request was made.",
+        safeNotes,
+        session.className,
+      ),
+    );
+  }
+  if (!env.OPENAI_API_KEY) {
+    return finish(
+      fallback(
+        "AI_NOT_CONFIGURED",
+        "AI is not configured, so a safe editable draft was created locally.",
+        safeNotes,
+        session.className,
+      ),
+    );
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8_000);
-
   try {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -134,6 +266,7 @@ export async function draftFeedback(
       signal: controller.signal,
       body: JSON.stringify({
         model: env.OPENAI_MODEL ?? "gpt-5-mini",
+        store: false,
         input: [
           {
             role: "system",
@@ -171,26 +304,30 @@ export async function draftFeedback(
     if (!response.ok) {
       const code =
         response.status === 429
-          ? "AI_RATE_LIMITED"
+          ? "AI_PROVIDER_RATE_LIMITED"
           : response.status >= 500
             ? "AI_PROVIDER_UNAVAILABLE"
             : "AI_REQUEST_FAILED";
-      return warning(
-        code,
-        "AI was unavailable, so a safe editable draft was created locally.",
-        rawNotes,
-        session.className,
+      return finish(
+        fallback(
+          code,
+          "AI was unavailable, so a safe editable draft was created locally.",
+          safeNotes,
+          session.className,
+        ),
       );
     }
 
     const payload: unknown = await response.json();
     const outputText = extractOutputText(payload);
     if (!outputText) {
-      return warning(
-        "AI_OUTPUT_INVALID",
-        "AI returned an invalid response, so a safe editable draft was created locally.",
-        rawNotes,
-        session.className,
+      return finish(
+        fallback(
+          "AI_OUTPUT_INVALID",
+          "AI returned an invalid response, so a safe editable draft was created locally.",
+          safeNotes,
+          session.className,
+        ),
       );
     }
 
@@ -198,34 +335,39 @@ export async function draftFeedback(
     try {
       decoded = JSON.parse(outputText);
     } catch {
-      return warning(
-        "AI_OUTPUT_INVALID",
-        "AI returned an invalid response, so a safe editable draft was created locally.",
-        rawNotes,
-        session.className,
+      return finish(
+        fallback(
+          "AI_OUTPUT_INVALID",
+          "AI returned invalid JSON, so a safe editable draft was created locally.",
+          safeNotes,
+          session.className,
+        ),
       );
     }
     const parsed = feedbackDraftSchema.safeParse(decoded);
     if (!parsed.success) {
-      return warning(
-        "AI_OUTPUT_INVALID",
-        "AI returned an invalid response, so a safe editable draft was created locally.",
-        rawNotes,
-        session.className,
+      return finish(
+        fallback(
+          "AI_OUTPUT_INVALID",
+          "AI returned an invalid structure, so a safe editable draft was created locally.",
+          safeNotes,
+          session.className,
+        ),
       );
     }
-
-    return { source: "ai", draft: parsed.data, warning: null };
+    return finish({ source: "ai", draft: parsed.data, warning: null });
   } catch (error) {
     const code =
       error instanceof DOMException && error.name === "AbortError"
         ? "AI_TIMEOUT"
         : "AI_PROVIDER_UNAVAILABLE";
-    return warning(
-      code,
-      "AI was unavailable, so a safe editable draft was created locally.",
-      rawNotes,
-      session.className,
+    return finish(
+      fallback(
+        code,
+        "AI was unavailable, so a safe editable draft was created locally.",
+        safeNotes,
+        session.className,
+      ),
     );
   } finally {
     clearTimeout(timer);

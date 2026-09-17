@@ -9,11 +9,7 @@ import {
   melbourneTime,
 } from "@/lib/domain";
 import type { StaffUser } from "@/lib/server-auth";
-import type {
-  CompleteClassResult,
-  TeacherWorkspaceData,
-} from "@/lib/types";
-import { loadTeacherWorkspace } from "@/lib/workspace-data";
+import type { CompleteClassResult } from "@/lib/types";
 
 type SessionGuardRow = {
   id: string;
@@ -22,8 +18,14 @@ type SessionGuardRow = {
   version: number;
   sessionDate: string;
   startTime: string;
-  completionKey: string | null;
-  completionHash: string | null;
+  rosterFrozenAt: string | null;
+};
+
+type CompletionClaimRow = {
+  actorId: string;
+  idempotencyKey: string;
+  requestHash: string;
+  state: "processing" | "completed";
 };
 
 type RosterAccountRow = {
@@ -43,41 +45,76 @@ async function sha256(value: string): Promise<string> {
 
 async function completionHash(input: CompleteClassInput): Promise<string> {
   const canonical = {
+    schemaVersion: 1,
+    operation: "complete_class",
     expectedVersion: input.expectedVersion,
     records: [...input.records].sort((a, b) =>
       a.studentId.localeCompare(b.studentId),
     ),
-    rawClassNotes: input.rawClassNotes,
+    rawClassNotes: input.rawClassNotes.normalize("NFC").trim(),
     feedback: input.feedback ?? null,
   };
   return sha256(JSON.stringify(canonical));
 }
 
-function completionResult(
-  workspace: TeacherWorkspaceData,
+async function readStableResult(
+  staff: StaffUser,
+  sessionId: string,
   idempotentReplay: boolean,
-): CompleteClassResult {
-  if (!workspace.selectedSession) {
+): Promise<CompleteClassResult> {
+  const result = await getD1()
+    .prepare(
+      `SELECT
+        session.id AS sessionId,
+        session.status,
+        session.version,
+        SUM(CASE WHEN attendance.billing_status = 'charged' THEN 1 ELSE 0 END) AS chargedCount,
+        SUM(CASE WHEN attendance.status = 'absent' THEN 1 ELSE 0 END) AS absentCount,
+        SUM(CASE
+          WHEN attendance.billing_status = 'pending_insufficient_credit'
+          THEN 1 ELSE 0 END) AS pendingCreditCount
+       FROM lesson_sessions AS session
+       LEFT JOIN attendance
+        ON attendance.lesson_session_id = session.id
+       WHERE session.id = ?
+        AND session.teacher_id = ?
+       GROUP BY session.id, session.status, session.version
+       LIMIT 1`,
+    )
+    .bind(sessionId, staff.id)
+    .first<{
+      sessionId: string;
+      status: string;
+      version: number;
+      chargedCount: number;
+      absentCount: number;
+      pendingCreditCount: number;
+    }>();
+
+  if (!result) {
     throw new AppError(404, "SESSION_NOT_FOUND", "Class session not found.");
+  }
+  if (result.status !== "completed") {
+    throw new AppError(
+      409,
+      "SESSION_NOT_COMPLETED",
+      "The class completion result is not available yet.",
+    );
   }
 
   return {
-    sessionId: workspace.selectedSession.id,
+    sessionId: result.sessionId,
     status: "completed",
-    version: workspace.selectedSession.version,
-    chargedCount: workspace.roster.filter(
-      (student) => student.billingStatus === "charged",
-    ).length,
-    absentCount: workspace.roster.filter(
-      (student) => student.attendanceStatus === "absent",
-    ).length,
-    pendingCreditCount: workspace.roster.filter(
-      (student) =>
-        student.billingStatus === "pending_insufficient_credit",
-    ).length,
-    roster: workspace.roster,
+    version: Number(result.version),
+    chargedCount: Number(result.chargedCount ?? 0),
+    absentCount: Number(result.absentCount ?? 0),
+    pendingCreditCount: Number(result.pendingCreditCount ?? 0),
     idempotentReplay,
   };
+}
+
+function databaseMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export async function completeClass(
@@ -94,7 +131,6 @@ export async function completeClass(
       "Only teachers can complete a class.",
     );
   }
-
   if (
     idempotencyKey.length < 8 ||
     idempotencyKey.length > 100 ||
@@ -118,8 +154,7 @@ export async function completeClass(
         version,
         session_date AS sessionDate,
         local_start_time AS startTime,
-        completion_key AS completionKey,
-        completion_hash AS completionHash
+        roster_frozen_at AS rosterFrozenAt
        FROM lesson_sessions
        WHERE id = ?
        LIMIT 1`,
@@ -138,23 +173,47 @@ export async function completeClass(
     );
   }
 
-  if (session.status === "completed") {
+  const existingClaim = await db
+    .prepare(
+      `SELECT
+        actor_id AS actorId,
+        idempotency_key AS idempotencyKey,
+        request_hash AS requestHash,
+        state
+       FROM session_completion_claims
+       WHERE lesson_session_id = ?
+       LIMIT 1`,
+    )
+    .bind(sessionId)
+    .first<CompletionClaimRow>();
+
+  if (existingClaim) {
     if (
-      session.completionKey === idempotencyKey &&
-      session.completionHash === hash
+      existingClaim.actorId === staff.id &&
+      existingClaim.idempotencyKey === idempotencyKey &&
+      existingClaim.requestHash === hash &&
+      existingClaim.state === "completed"
     ) {
-      return completionResult(
-        await loadTeacherWorkspace(staff, sessionId, now),
-        true,
-      );
+      return readStableResult(staff, sessionId, true);
     }
-    if (session.completionKey === idempotencyKey) {
+    if (
+      existingClaim.actorId === staff.id &&
+      existingClaim.idempotencyKey === idempotencyKey
+    ) {
       throw new AppError(
         409,
         "IDEMPOTENCY_KEY_REUSED",
         "This idempotency key was already used with different attendance.",
       );
     }
+    throw new AppError(
+      409,
+      "SESSION_ALREADY_COMPLETED",
+      "This class has already been claimed or completed.",
+    );
+  }
+
+  if (session.status === "completed") {
     throw new AppError(
       409,
       "SESSION_ALREADY_COMPLETED",
@@ -174,6 +233,13 @@ export async function completeClass(
       "VERSION_CONFLICT",
       "This class changed after you opened it. Refresh and try again.",
       { expected: input.expectedVersion, actual: session.version },
+    );
+  }
+  if (!session.rosterFrozenAt) {
+    throw new AppError(
+      409,
+      "ROSTER_NOT_READY",
+      "The class roster has not been frozen for attendance.",
     );
   }
 
@@ -200,22 +266,25 @@ export async function completeClass(
   const rosterResult = await db
     .prepare(
       `SELECT
-        e.student_id AS studentId,
-        ca.id AS accountId
-       FROM lesson_sessions ls
-       JOIN enrollments e
-        ON e.class_series_id = ls.class_series_id
-        AND e.status = 'active'
-        AND e.starts_on <= ls.session_date
-        AND (e.ends_on IS NULL OR e.ends_on >= ls.session_date)
-       JOIN credit_accounts ca ON ca.student_id = e.student_id
-       WHERE ls.id = ?
-       ORDER BY e.student_id`,
+        participant.student_id AS studentId,
+        participant.credit_account_id AS accountId
+       FROM session_participants AS participant
+       WHERE participant.lesson_session_id = ?
+        AND participant.removed_at IS NULL
+       ORDER BY participant.sort_order, participant.student_id`,
     )
     .bind(sessionId)
     .all<RosterAccountRow>();
 
   const roster = rosterResult.results;
+  if (roster.length === 0) {
+    throw new AppError(
+      409,
+      "EMPTY_ROSTER",
+      "A class with no participants must be cancelled rather than completed.",
+    );
+  }
+
   const submitted = new Map(
     input.records.map((record) => [record.studentId, record]),
   );
@@ -226,28 +295,44 @@ export async function completeClass(
   const unexpected = input.records
     .filter((record) => !rosterIds.has(record.studentId))
     .map((record) => record.studentId);
-
   if (missing.length || unexpected.length) {
     throw new AppError(
       422,
       unexpected.length ? "STUDENT_NOT_IN_ROSTER" : "INCOMPLETE_ROSTER",
-      "Attendance must include every current student exactly once.",
+      "Attendance must include every current participant exactly once.",
       { missing, unexpected },
     );
   }
 
-  const statements: D1PreparedStatement[] = [];
+  const statements: D1PreparedStatement[] = [
+    db
+      .prepare(
+        `INSERT INTO session_completion_claims
+          (lesson_session_id, actor_id, expected_version, operation,
+           idempotency_key, request_hash, state)
+         VALUES (?, ?, ?, 'complete_class', ?, ?, 'processing')`,
+      )
+      .bind(
+        sessionId,
+        staff.id,
+        input.expectedVersion,
+        idempotencyKey,
+        hash,
+      ),
+  ];
+
   for (const row of roster) {
     const record = submitted.get(row.studentId);
     if (!record) continue;
-
     const attendanceId = `attendance_${sessionId}_${row.studentId}`;
     const billable = isBillable(record.status);
+
     statements.push(
       db
         .prepare(
           `INSERT INTO attendance
-            (id, lesson_session_id, student_id, status, billing_status, recorded_by_id)
+            (id, lesson_session_id, student_id, status,
+             billing_status, recorded_by_id)
            VALUES (?, ?, ?, ?, ?, ?)`,
         )
         .bind(
@@ -265,7 +350,8 @@ export async function completeClass(
         db
           .prepare(
             `INSERT INTO credit_transactions
-              (id, account_id, kind, quantity, source_type, source_id, note, created_by_id)
+              (id, account_id, kind, quantity, source_type,
+               source_id, note, created_by_id)
              SELECT ?, ?, 'attendance', -1, 'attendance', ?, ?, ?
              WHERE (
                SELECT COALESCE(SUM(quantity), 0)
@@ -282,9 +368,55 @@ export async function completeClass(
             row.accountId,
           ),
       );
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO billing_exceptions
+              (id, attendance_id, student_id, account_id, reason,
+               status, assigned_to_id)
+             SELECT ?, ?, ?, ?, 'insufficient_credit', 'open',
+               (SELECT owner_admin_id FROM students WHERE id = ?)
+             WHERE NOT EXISTS (
+               SELECT 1
+               FROM credit_transactions
+               WHERE kind = 'attendance'
+                AND source_type = 'attendance'
+                AND source_id = ?
+             )`,
+          )
+          .bind(
+            `billing_exception_${attendanceId}`,
+            attendanceId,
+            row.studentId,
+            row.accountId,
+            row.studentId,
+            attendanceId,
+          ),
+      );
     }
   }
 
+  statements.push(
+    db
+      .prepare(
+        `UPDATE lesson_sessions
+         SET status = 'completed',
+             raw_class_notes = ?,
+             feedback_json = ?,
+             completed_at = CURRENT_TIMESTAMP,
+             completed_by_id = ?,
+             version = version + 1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND teacher_id = ?`,
+      )
+      .bind(
+        input.rawClassNotes || null,
+        input.feedback ? JSON.stringify(input.feedback) : null,
+        staff.id,
+        sessionId,
+        staff.id,
+      ),
+  );
   statements.push(
     db
       .prepare(
@@ -305,74 +437,71 @@ export async function completeClass(
   statements.push(
     db
       .prepare(
-        `UPDATE lesson_sessions
-         SET
-          status = 'completed',
-          raw_class_notes = ?,
-          feedback_json = ?,
-          completion_key = ?,
-          completion_hash = ?,
-          completed_at = CURRENT_TIMESTAMP,
-          completed_by_id = ?,
-          version = version + 1,
-          updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?
-          AND teacher_id = ?
-          AND status = 'scheduled'
-          AND version = ?`,
+        `UPDATE session_completion_claims
+         SET state = 'completed', completed_at = CURRENT_TIMESTAMP
+         WHERE lesson_session_id = ?
+          AND actor_id = ?
+          AND request_hash = ?`,
       )
-      .bind(
-        input.rawClassNotes || null,
-        input.feedback ? JSON.stringify(input.feedback) : null,
-        idempotencyKey,
-        hash,
-        staff.id,
-        sessionId,
-        staff.id,
-        input.expectedVersion,
-      ),
+      .bind(sessionId, staff.id, hash),
   );
 
   try {
-    const results = await db.batch(statements);
-    const update = results.at(-1);
-    if (!update?.meta || Number(update.meta.changes) !== 1) {
-      throw new Error("SESSION_FINALIZE_GUARD_FAILED");
-    }
+    await db.batch(statements);
   } catch (error) {
-    const latest = await db
+    const racedClaim = await db
       .prepare(
-        `SELECT status, completion_key AS completionKey, completion_hash AS completionHash
-         FROM lesson_sessions WHERE id = ? LIMIT 1`,
+        `SELECT actor_id AS actorId, idempotency_key AS idempotencyKey,
+                request_hash AS requestHash, state
+         FROM session_completion_claims
+         WHERE lesson_session_id = ?
+         LIMIT 1`,
       )
       .bind(sessionId)
-      .first<{
-        status: string;
-        completionKey: string | null;
-        completionHash: string | null;
-      }>();
+      .first<CompletionClaimRow>();
 
     if (
-      latest?.status === "completed" &&
-      latest.completionKey === idempotencyKey &&
-      latest.completionHash === hash
+      racedClaim?.actorId === staff.id &&
+      racedClaim.idempotencyKey === idempotencyKey &&
+      racedClaim.requestHash === hash &&
+      racedClaim.state === "completed"
     ) {
-      return completionResult(
-        await loadTeacherWorkspace(staff, sessionId, now),
-        true,
-      );
+      return readStableResult(staff, sessionId, true);
     }
 
-    console.error("Class completion failed", error);
-    throw new AppError(
-      409,
-      "SESSION_COMPLETION_CONFLICT",
-      "The class could not be completed because its data changed. Refresh and try again.",
-    );
+    const message = databaseMessage(error);
+    if (message.includes("SESSION_COMPLETION_CLAIM_REJECTED")) {
+      throw new AppError(
+        409,
+        "VERSION_CONFLICT",
+        "This class changed while it was being completed. Refresh and compare.",
+      );
+    }
+    if (
+      message.includes("STUDENT_NOT_IN_SESSION_ROSTER") ||
+      message.includes("UNIQUE constraint failed: attendance")
+    ) {
+      throw new AppError(
+        409,
+        "SESSION_COMPLETION_CONFLICT",
+        "Attendance changed while the class was being completed.",
+      );
+    }
+    throw error;
   }
 
-  return completionResult(
-    await loadTeacherWorkspace(staff, sessionId, now),
-    false,
-  );
+  const result = await readStableResult(staff, sessionId, false);
+  try {
+    await db
+      .prepare(
+        `UPDATE session_completion_claims
+         SET response_json = ?
+         WHERE lesson_session_id = ? AND response_json IS NULL`,
+      )
+      .bind(JSON.stringify(result), sessionId)
+      .run();
+  } catch (error) {
+    console.error("Completion receipt snapshot could not be cached", error);
+  }
+  return result;
 }

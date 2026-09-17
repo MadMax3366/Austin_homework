@@ -102,14 +102,12 @@ export async function loadTeacherWorkspace(
         ls.local_end_time AS endTime,
         ls.status,
         ls.version,
-        COUNT(e.id) AS rosterCount
+        COUNT(participant.id) AS rosterCount
        FROM lesson_sessions ls
        JOIN class_series cs ON cs.id = ls.class_series_id
-       LEFT JOIN enrollments e
-        ON e.class_series_id = ls.class_series_id
-        AND e.status = 'active'
-        AND e.starts_on <= ls.session_date
-        AND (e.ends_on IS NULL OR e.ends_on >= ls.session_date)
+       LEFT JOIN session_participants participant
+        ON participant.lesson_session_id = ls.id
+        AND participant.removed_at IS NULL
        WHERE ls.teacher_id = ?
         AND ls.session_date = ?
        GROUP BY
@@ -170,39 +168,29 @@ export async function loadTeacherWorkspace(
     db
       .prepare(
         `SELECT
-          s.id,
-          COALESCE(s.preferred_name, s.legal_name) AS name,
-          s.date_of_birth AS dateOfBirth,
+          participant.student_id AS id,
+          participant.display_name AS name,
+          participant.date_of_birth AS dateOfBirth,
           COALESCE(SUM(ct.quantity), 0) AS balance,
-          CASE WHEN EXISTS (
-            SELECT 1
-            FROM attendance previous_attendance
-            JOIN lesson_sessions previous_session
-              ON previous_session.id = previous_attendance.lesson_session_id
-            WHERE previous_attendance.student_id = s.id
-              AND previous_session.session_date < ls.session_date
-              AND previous_attendance.status IN ('present', 'late')
-          ) THEN 0 ELSE 1 END AS isNew,
+          participant.is_new AS isNew,
           a.status AS attendanceStatus,
           a.billing_status AS billingStatus
          FROM lesson_sessions ls
-         JOIN enrollments e
-          ON e.class_series_id = ls.class_series_id
-          AND e.status = 'active'
-          AND e.starts_on <= ls.session_date
-          AND (e.ends_on IS NULL OR e.ends_on >= ls.session_date)
-         JOIN students s ON s.id = e.student_id
-         JOIN credit_accounts ca ON ca.student_id = s.id
-         LEFT JOIN credit_transactions ct ON ct.account_id = ca.id
+         JOIN session_participants participant
+          ON participant.lesson_session_id = ls.id
+          AND participant.removed_at IS NULL
+         JOIN credit_accounts ca ON ca.id = participant.credit_account_id
+         LEFT JOIN credit_transactions ct ON ct.account_id = participant.credit_account_id
          LEFT JOIN attendance a
           ON a.lesson_session_id = ls.id
-          AND a.student_id = s.id
+          AND a.student_id = participant.student_id
          WHERE ls.id = ?
           AND ls.teacher_id = ?
          GROUP BY
-          s.id, s.preferred_name, s.legal_name, s.date_of_birth,
-          ls.session_date, a.status, a.billing_status
-         ORDER BY COALESCE(s.preferred_name, s.legal_name)`,
+          participant.student_id, participant.display_name,
+          participant.date_of_birth, participant.is_new,
+          participant.sort_order, ls.session_date, a.status, a.billing_status
+         ORDER BY participant.sort_order, participant.display_name`,
       )
       .bind(selectedSession.id, staff.id)
       .all<RosterRow>(),
@@ -215,7 +203,7 @@ export async function loadTeacherWorkspace(
     age: calculateAge(row.dateOfBirth, selectedSession.date),
     balance: Number(row.balance),
     isNew: Boolean(row.isNew),
-    attendanceStatus: row.attendanceStatus ?? "present",
+    attendanceStatus: row.attendanceStatus,
     billingStatus: row.billingStatus,
   }));
 

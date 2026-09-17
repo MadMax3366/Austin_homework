@@ -125,6 +125,7 @@ export const lessonSessions = sqliteTable(
     }).notNull(),
     rawClassNotes: text("raw_class_notes"),
     feedbackJson: text("feedback_json"),
+    rosterFrozenAt: text("roster_frozen_at"),
     completionKey: text("completion_key"),
     completionHash: text("completion_hash"),
     completedAt: text("completed_at"),
@@ -176,6 +177,9 @@ export const enrollments = sqliteTable(
     ),
     index("idx_enrollments_series_status").on(table.classSeriesId, table.status),
     index("idx_enrollments_student_status").on(table.studentId, table.status),
+    uniqueIndex("uq_enrollments_active_student_series")
+      .on(table.studentId, table.classSeriesId)
+      .where(sql`${table.status} = 'active'`),
     check("ck_enrollments_status", sql`${table.status} IN ('active', 'ended')`),
   ],
 );
@@ -234,6 +238,45 @@ export const creditAccounts = sqliteTable(
   ],
 );
 
+export const sessionParticipants = sqliteTable(
+  "session_participants",
+  {
+    id: text("id").primaryKey(),
+    lessonSessionId: text("lesson_session_id")
+      .notNull()
+      .references(() => lessonSessions.id),
+    studentId: text("student_id")
+      .notNull()
+      .references(() => students.id),
+    enrollmentId: text("enrollment_id").references(() => enrollments.id),
+    creditAccountId: text("credit_account_id")
+      .notNull()
+      .references(() => creditAccounts.id),
+    displayName: text("display_name").notNull(),
+    dateOfBirth: text("date_of_birth").notNull(),
+    isNew: integer("is_new", { mode: "boolean" }).notNull().default(false),
+    source: text("source", {
+      enum: ["enrollment", "trial", "makeup", "manual"],
+    })
+      .notNull()
+      .default("enrollment"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    removedAt: text("removed_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_session_participants_session_student").on(
+      table.lessonSessionId,
+      table.studentId,
+    ),
+    index("idx_session_participants_student").on(table.studentId),
+    check(
+      "ck_session_participants_source",
+      sql`${table.source} IN ('enrollment', 'trial', 'makeup', 'manual')`,
+    ),
+  ],
+);
+
 export const creditTransactions = sqliteTable(
   "credit_transactions",
   {
@@ -267,6 +310,182 @@ export const creditTransactions = sqliteTable(
       "ck_credit_transactions_kind",
       sql`${table.kind} IN ('purchase', 'attendance', 'adjustment', 'reversal')`,
     ),
+  ],
+);
+
+export const completionClaims = sqliteTable(
+  "session_completion_claims",
+  {
+    lessonSessionId: text("lesson_session_id")
+      .primaryKey()
+      .references(() => lessonSessions.id),
+    actorId: text("actor_id")
+      .notNull()
+      .references(() => staffUsers.id),
+    expectedVersion: integer("expected_version").notNull(),
+    operation: text("operation").notNull().default("complete_class"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    state: text("state", { enum: ["processing", "completed"] })
+      .notNull()
+      .default("processing"),
+    responseSchemaVersion: integer("response_schema_version").notNull().default(1),
+    responseJson: text("response_json"),
+    completedAt: text("completed_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_completion_claims_actor_operation_idempotency").on(
+      table.actorId,
+      table.operation,
+      table.idempotencyKey,
+    ),
+    check(
+      "ck_completion_claims_operation",
+      sql`${table.operation} = 'complete_class'`,
+    ),
+    check(
+      "ck_completion_claims_state",
+      sql`${table.state} IN ('processing', 'completed')`,
+    ),
+  ],
+);
+
+export const billingExceptions = sqliteTable(
+  "billing_exceptions",
+  {
+    id: text("id").primaryKey(),
+    attendanceId: text("attendance_id")
+      .notNull()
+      .references(() => attendance.id),
+    studentId: text("student_id")
+      .notNull()
+      .references(() => students.id),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => creditAccounts.id),
+    reason: text("reason", { enum: ["insufficient_credit"] }).notNull(),
+    status: text("status", {
+      enum: ["open", "resolved", "waived", "cancelled"],
+    })
+      .notNull()
+      .default("open"),
+    version: integer("version").notNull().default(1),
+    resolutionNote: text("resolution_note"),
+    resolutionType: text("resolution_type", {
+      enum: ["charged_after_topup", "waived", "attendance_corrected"],
+    }),
+    resolutionTransactionId: text("resolution_transaction_id").references(
+      () => creditTransactions.id,
+    ),
+    assignedToId: text("assigned_to_id").references(() => staffUsers.id),
+    resolvedById: text("resolved_by_id").references(() => staffUsers.id),
+    resolvedAt: text("resolved_at"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("uq_billing_exceptions_attendance").on(table.attendanceId),
+    index("idx_billing_exceptions_status_created").on(
+      table.status,
+      table.createdAt,
+    ),
+    check(
+      "ck_billing_exceptions_reason",
+      sql`${table.reason} = 'insufficient_credit'`,
+    ),
+    check(
+      "ck_billing_exceptions_status",
+      sql`${table.status} IN ('open', 'resolved', 'waived', 'cancelled')`,
+    ),
+  ],
+);
+
+export const billingExceptionClaims = sqliteTable(
+  "billing_exception_resolution_claims",
+  {
+    billingExceptionId: text("billing_exception_id")
+      .primaryKey()
+      .references(() => billingExceptions.id),
+    actorId: text("actor_id")
+      .notNull()
+      .references(() => staffUsers.id),
+    expectedVersion: integer("expected_version").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    action: text("action", { enum: ["charge", "waive"] }).notNull(),
+    state: text("state", { enum: ["processing", "completed"] })
+      .notNull()
+      .default("processing"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    completedAt: text("completed_at"),
+  },
+  (table) => [
+    uniqueIndex("uq_billing_resolution_actor_idempotency").on(
+      table.actorId,
+      table.idempotencyKey,
+    ),
+    check(
+      "ck_billing_resolution_action",
+      sql`${table.action} IN ('charge', 'waive')`,
+    ),
+    check(
+      "ck_billing_resolution_state",
+      sql`${table.state} IN ('processing', 'completed')`,
+    ),
+  ],
+);
+
+export const aiGenerations = sqliteTable(
+  "ai_generations",
+  {
+    id: text("id").primaryKey(),
+    actorId: text("actor_id")
+      .notNull()
+      .references(() => staffUsers.id),
+    lessonSessionId: text("lesson_session_id")
+      .notNull()
+      .references(() => lessonSessions.id),
+    inputHash: text("input_hash").notNull(),
+    source: text("source", { enum: ["ai", "fallback"] }).notNull(),
+    status: text("status", { enum: ["succeeded", "fallback"] }).notNull(),
+    errorCode: text("error_code"),
+    latencyMs: integer("latency_ms").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_ai_generations_actor_created").on(
+      table.actorId,
+      table.createdAt,
+    ),
+    check("ck_ai_generations_source", sql`${table.source} IN ('ai', 'fallback')`),
+    check(
+      "ck_ai_generations_status",
+      sql`${table.status} IN ('succeeded', 'fallback')`,
+    ),
+  ],
+);
+
+export const aiRateLimitBuckets = sqliteTable(
+  "ai_rate_limit_buckets",
+  {
+    id: text("id").primaryKey(),
+    scope: text("scope", { enum: ["teacher_minute", "session_day"] }).notNull(),
+    subjectId: text("subject_id").notNull(),
+    bucketStart: text("bucket_start").notNull(),
+    requestCount: integer("request_count").notNull().default(1),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("uq_ai_rate_limit_scope_subject_bucket").on(
+      table.scope,
+      table.subjectId,
+      table.bucketStart,
+    ),
+    check(
+      "ck_ai_rate_limit_scope",
+      sql`${table.scope} IN ('teacher_minute', 'session_day')`,
+    ),
+    check("ck_ai_rate_limit_count", sql`${table.requestCount} > 0`),
   ],
 );
 

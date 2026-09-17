@@ -57,6 +57,16 @@ export const feedbackRequestSchema = z
   })
   .strict();
 
+export const billingResolutionSchema = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    action: z.enum(["charge", "waive"]),
+    note: z.string().trim().min(3).max(500),
+  })
+  .strict();
+
+export type BillingResolutionInput = z.infer<typeof billingResolutionSchema>;
+
 export function isBillable(status: AttendanceStatus): boolean {
   return status === "present" || status === "late";
 }
