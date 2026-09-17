@@ -67,6 +67,15 @@ const roleLabels: Record<PlatformRole, string> = {
   system_admin: "系统管理",
 };
 
+const operationsModules = [
+  { id: "tasks", label: "今日待办", sections: ["trial-attention", "tasks", "low-balances"] },
+  { id: "students", label: "学生管理", sections: ["students", "admin-workloads"] },
+  { id: "schedule", label: "排课中心", sections: ["schedule", "resources"] },
+  { id: "admissions", label: "招生试听", sections: ["inquiries", "trials", "trial-attention"] },
+  { id: "credits", label: "课时财务", sections: ["low-balances", "orders", "refunds"] },
+  { id: "teachers", label: "教师调度", sections: ["teacher-leave", "substitutions", "schedule"] },
+] as const;
+
 const fieldLabels: Record<string, string> = {
   student: "学生",
   legalName: "姓名",
@@ -107,6 +116,9 @@ const fieldLabels: Record<string, string> = {
   eventType: "事件类型",
   aggregateType: "对象类型",
   lastCheckedAt: "最近检查",
+  affectedSessions: "受影响课次",
+  originalTeacher: "原老师",
+  substituteTeacher: "代课老师",
   taskType: "任务",
   faqCategory: "问题类型",
   question: "问题",
@@ -508,10 +520,11 @@ function SelectField({ label, value, onChange, options }: {
   );
 }
 
-function OperationsActions({ data, run, busy }: {
+function OperationsActions({ data, run, busy, initialMode = "create" }: {
   data: PlatformOverview;
   run: (command: PlatformCommandInput) => Promise<void>;
   busy: boolean;
+  initialMode?: string;
 }) {
   const inquiryRows = data.sections.find((section) => section.id === "inquiries")?.rows ?? [];
   const trialRows = data.sections.find((section) => section.id === "trials")?.rows ?? [];
@@ -522,7 +535,7 @@ function OperationsActions({ data, run, busy }: {
   const teacher = resources.find((row) => row.type === "teacher");
   const room = resources.find((row) => row.type === "room");
   const targetClass = resources.find((row) => row.type === "class");
-  const [mode, setMode] = useState("create");
+  const [mode, setMode] = useState(initialMode);
   const [studentName, setStudentName] = useState("王晨");
   const [birthDate, setBirthDate] = useState("2015-04-12");
   const [guardianName, setGuardianName] = useState("王女士");
@@ -626,6 +639,58 @@ function OperationsActions({ data, run, busy }: {
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function TeacherOperations({ data, run, busy }: {
+  data: PlatformOverview;
+  run: (command: PlatformCommandInput) => Promise<void>;
+  busy: boolean;
+}) {
+  const leaves = data.sections.find((section) => section.id === "teacher-leave")?.rows ?? [];
+  const schedule = data.sections.find((section) => section.id === "schedule")?.rows ?? [];
+  const resources = data.sections.find((section) => section.id === "resources")?.rows ?? [];
+  const teachers = resources.filter((row) => row.type === "teacher");
+  const [leaveId, setLeaveId] = useState(String(leaves.find((row) => row.status === "requested")?.id ?? leaves[0]?.id ?? ""));
+  const selectedLeave = leaves.find((row) => String(row.id) === leaveId);
+  const affectedSessions = schedule.filter((row) =>
+    String(row.teacherId) === String(selectedLeave?.teacherId) &&
+    String(row.sessionDate) >= String(selectedLeave?.startsOn ?? "") &&
+    String(row.sessionDate) <= String(selectedLeave?.endsOn ?? ""),
+  );
+  const [sessionId, setSessionId] = useState("");
+  const [substituteTeacherId, setSubstituteTeacherId] = useState("");
+  const [recordTeacherId, setRecordTeacherId] = useState(String(teachers[0]?.id ?? ""));
+  const [leaveStart, setLeaveStart] = useState("");
+  const [leaveEnd, setLeaveEnd] = useState("");
+  const [reason, setReason] = useState("");
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader><CardTitle>登记老师请假</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <SelectField label="老师" value={recordTeacherId} onChange={setRecordTeacherId} options={teachers.map((row) => ({ value: String(row.id), label: String(row.name) }))} />
+          <Field label="开始日期" value={leaveStart} onChange={setLeaveStart} type="date" />
+          <Field label="结束日期" value={leaveEnd} onChange={setLeaveEnd} type="date" />
+          <Field label="原因" value={reason} onChange={setReason} />
+          <Button className="w-full" disabled={busy || !recordTeacherId || !leaveStart || !leaveEnd || reason.trim().length < 2} onClick={() => void run({ action: "request_teacher_leave", teacherId: recordTeacherId, startsOn: leaveStart, endsOn: leaveEnd, reason })}>提交请假</Button>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader><CardTitle>请假与代课</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <SelectField label="请假申请" value={leaveId} onChange={(value) => { setLeaveId(value); setSessionId(""); }} options={leaves.map((row) => ({ value: String(row.id), label: `${String(row.teacher)} · ${String(row.startsOn)}至${String(row.endsOn)} · ${valueLabels[String(row.status)] ?? String(row.status)}` }))} />
+          <div className="grid grid-cols-2 gap-2">
+            <Button disabled={busy || !leaveId || selectedLeave?.status !== "requested"} onClick={() => void run({ action: "decide_teacher_leave", leaveRequestId: leaveId, approve: true })}>批准</Button>
+            <Button variant="outline" disabled={busy || !leaveId || selectedLeave?.status !== "requested"} onClick={() => void run({ action: "decide_teacher_leave", leaveRequestId: leaveId, approve: false })}>拒绝</Button>
+          </div>
+          <SelectField label="受影响课次" value={sessionId} onChange={setSessionId} options={affectedSessions.map((row) => ({ value: String(row.id), label: `${String(row.sessionDate)} ${String(row.startTime)} · ${String(row.className)}` }))} />
+          <SelectField label="代课老师" value={substituteTeacherId} onChange={setSubstituteTeacherId} options={teachers.filter((row) => String(row.id) !== String(selectedLeave?.teacherId)).map((row) => ({ value: String(row.id), label: String(row.name) }))} />
+          <Button className="w-full" disabled={busy || selectedLeave?.status !== "approved" || !sessionId || !substituteTeacherId} onClick={() => void run({ action: "assign_substitute", leaveRequestId: leaveId, sessionId, substituteTeacherId, reason: "运营安排代课" })}>安排代课</Button>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -796,6 +861,7 @@ export function PlatformWorkspace({ role, viewer }: {
   const [studentDetail, setStudentDetail] = useState<StudentDetail | null>(null);
   const [studentDetailLoading, setStudentDetailLoading] = useState(false);
   const [studentDetailError, setStudentDetailError] = useState("");
+  const [operationsModule, setOperationsModule] = useState<(typeof operationsModules)[number]["id"]>("tasks");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -885,6 +951,14 @@ export function PlatformWorkspace({ role, viewer }: {
     }
   };
 
+  const selectedOperationsModule = operationsModules.find((item) => item.id === operationsModule) ?? operationsModules[0];
+  const visibleSections =
+    role === "operations_admin"
+      ? data?.sections.filter((section) => (selectedOperationsModule.sections as readonly string[]).includes(section.id)) ?? []
+      : data?.sections ?? [];
+  const showAside =
+    role !== "operations_admin" || ["tasks", "admissions", "credits", "teachers"].includes(operationsModule);
+
   return (
     <main className="min-h-screen bg-[var(--canvas)] text-foreground">
       <header className="sticky top-0 z-30 border-b border-[var(--navy-800)] bg-[var(--navy-950)] text-white">
@@ -925,10 +999,17 @@ export function PlatformWorkspace({ role, viewer }: {
             <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {data.metrics.map((metric) => <Card key={metric.label} className={metric.tone === "warning" ? "border-amber-300 bg-amber-50/60" : metric.tone === "positive" ? "border-emerald-300 bg-emerald-50/60" : "bg-white"}><CardHeader className="pb-0"><CardDescription>{metric.label}</CardDescription><CardTitle className="text-2xl">{metric.value}</CardTitle></CardHeader></Card>)}
             </div>
-            <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-              <Tabs value={activeSection ?? data.sections[0]?.id} onValueChange={setActiveSection} className="min-w-0">
-                <div className="overflow-x-auto pb-2"><TabsList variant="line">{data.sections.map((section) => <TabsTrigger key={section.id} value={section.id}>{section.title}<Badge variant="secondary">{section.totalRows ?? section.rows.length}</Badge></TabsTrigger>)}</TabsList></div>
-                {data.sections.map((section) => (
+            {role === "operations_admin" ? (
+              <nav className="mt-6 grid gap-2 sm:grid-cols-3 xl:grid-cols-6" aria-label="运营模块">
+                {operationsModules.map((item) => (
+                  <Button key={item.id} type="button" variant={operationsModule === item.id ? "default" : "outline"} onClick={() => { setOperationsModule(item.id); setActiveSection(item.sections[0]); }}>{item.label}</Button>
+                ))}
+              </nav>
+            ) : null}
+            <div className={`mt-6 grid gap-6 ${showAside ? "xl:grid-cols-[minmax(0,1fr)_340px]" : "grid-cols-1"}`}>
+              <Tabs value={activeSection && visibleSections.some((section) => section.id === activeSection) ? activeSection : visibleSections[0]?.id} onValueChange={setActiveSection} className="min-w-0">
+                <div className="overflow-x-auto pb-2"><TabsList variant="line">{visibleSections.map((section) => <TabsTrigger key={section.id} value={section.id}>{section.title}<Badge variant="secondary">{section.totalRows ?? section.rows.length}</Badge></TabsTrigger>)}</TabsList></div>
+                {visibleSections.map((section) => (
                   <TabsContent key={section.id} value={section.id} className="mt-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <h2 className="text-lg font-semibold text-[var(--navy-950)]">{section.title}</h2>
@@ -960,19 +1041,21 @@ export function PlatformWorkspace({ role, viewer }: {
                   </TabsContent>
                 ))}
               </Tabs>
-              <aside>
-                {role === "operations_admin" ? (
+              {showAside ? <aside>
+                {role === "operations_admin" && operationsModule !== "teachers" ? (
                   <OperationsActions
-                    key={JSON.stringify(data.sections.filter((section) => ["inquiries", "trials", "trial-attention", "low-balances"].includes(section.id)).map((section) => section.rows.map((row) => [row.id, row.status, row.outcome, row.decision, row.credits])))}
+                    key={`${operationsModule}:${JSON.stringify(data.sections.filter((section) => ["inquiries", "trials", "trial-attention", "low-balances"].includes(section.id)).map((section) => section.rows.map((row) => [row.id, row.status, row.outcome, row.decision, row.credits])))}`}
                     data={data}
                     run={run}
                     busy={busy}
+                    initialMode={operationsModule === "credits" ? "renewal" : operationsModule === "tasks" ? "outcome" : "create"}
                   />
                 ) : null}
+                {role === "operations_admin" && operationsModule === "teachers" ? <TeacherOperations data={data} run={run} busy={busy} /> : null}
                 {role === "manager_admin" ? <ManagerActions data={data} run={run} busy={busy} /> : null}
                 {role === "student" || role === "guardian" ? <PortalActions data={data} run={run} busy={busy} role={role} /> : null}
                 {role === "system_admin" ? <SystemActions run={run} busy={busy} /> : null}
-              </aside>
+              </aside> : null}
             </div>
           </>
         ) : null}

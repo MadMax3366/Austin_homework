@@ -305,6 +305,10 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [switchOpen, setSwitchOpen] = useState(false);
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
+  const [leaveStart, setLeaveStart] = useState("");
+  const [leaveEnd, setLeaveEnd] = useState("");
+  const [leaveReason, setLeaveReason] = useState("");
+  const [leaveBusy, setLeaveBusy] = useState(false);
   const idempotencyKey = useRef("");
   const intentSessionId = useRef<string | null>(null);
   const loadSequence = useRef(0);
@@ -671,6 +675,31 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
     }
   }
 
+  async function submitLeaveRequest() {
+    if (!leaveStart || !leaveEnd || leaveReason.trim().length < 2 || leaveBusy) return;
+    setLeaveBusy(true);
+    try {
+      const result = await requestJson<{ message: string }>(
+        "/api/platform/commands?role=teacher",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            action: "request_teacher_leave",
+            startsOn: leaveStart,
+            endsOn: leaveEnd,
+            reason: leaveReason,
+          }),
+        },
+      );
+      toast.success(result.message);
+      setLeaveReason("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "请假申请提交失败。");
+    } finally {
+      setLeaveBusy(false);
+    }
+  }
+
   useEffect(() => {
     const context = document.modelContext;
     const session = data?.selectedSession;
@@ -957,6 +986,15 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   participants: item.rosterCount,
                 }))}
               />
+              <details className="mt-3 rounded-xl border bg-white p-4">
+                <summary className="cursor-pointer font-medium">提交请假申请</summary>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-2 text-sm font-medium"><span>开始日期</span><input className="block h-10 w-full rounded-md border px-3 font-normal" type="date" value={leaveStart} onChange={(event) => setLeaveStart(event.target.value)} /></label>
+                  <label className="space-y-2 text-sm font-medium"><span>结束日期</span><input className="block h-10 w-full rounded-md border px-3 font-normal" type="date" value={leaveEnd} onChange={(event) => setLeaveEnd(event.target.value)} /></label>
+                  <label className="space-y-2 text-sm font-medium sm:col-span-2"><span>请假原因</span><Textarea value={leaveReason} onChange={(event) => setLeaveReason(event.target.value)} maxLength={1000} /></label>
+                  <Button className="sm:col-span-2" disabled={leaveBusy || !leaveStart || !leaveEnd || leaveReason.trim().length < 2} onClick={() => void submitLeaveRequest()}>{leaveBusy ? <Spinner /> : null}提交申请</Button>
+                </div>
+              </details>
             </div>
             <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-start sm:justify-between">
               <div>

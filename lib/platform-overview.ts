@@ -95,6 +95,10 @@ async function operationsOverview(
     teachers,
     rooms,
     classes,
+    ordersResult,
+    refundsResult,
+    leaveRequests,
+    substitutions,
   ] = await Promise.all([
     db.prepare(`SELECT
       (SELECT COUNT(*) FROM inquiries
@@ -248,7 +252,7 @@ async function operationsOverview(
         session.session_date AS sessionDate,
         session.session_kind AS kind, session.local_start_time AS startTime,
         session.local_end_time AS endTime, series.room,
-        staff.display_name AS teacher, session.status,
+        session.teacher_id AS teacherId,staff.display_name AS teacher, session.status,
         COUNT(participant.id) AS participants
       FROM lesson_sessions session
       JOIN class_series series ON series.id=session.class_series_id
@@ -319,6 +323,53 @@ async function operationsOverview(
     db.prepare(`SELECT id,name,subject,capacity
       FROM class_series WHERE active=1 AND session_kind='regular' ORDER BY name`)
       .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT orders.id,
+        COALESCE(student.preferred_name,student.legal_name) AS student,
+        orders.status,orders.amount_cents AS amountCents,
+        orders.credit_quantity AS credits,orders.created_at AS createdAt
+      FROM orders
+      JOIN students student ON student.id=orders.student_id
+      WHERE orders.organization_id=?
+        AND (?='organization' OR student.owner_admin_id=?)
+      ORDER BY orders.created_at DESC LIMIT 30`)
+      .bind(account.organizationId, assignment.scopeType, assignment.staffUserId)
+      .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT refund.id,refund.order_id AS orderId,
+        COALESCE(student.preferred_name,student.legal_name) AS student,
+        refund.status,refund.amount_cents AS amountCents,refund.reason,
+        refund.created_at AS createdAt
+      FROM refunds refund
+      JOIN orders order_record ON order_record.id=refund.order_id
+      JOIN students student ON student.id=order_record.student_id
+      WHERE (?='organization' OR student.owner_admin_id=?)
+      ORDER BY refund.created_at DESC LIMIT 30`)
+      .bind(assignment.scopeType, assignment.staffUserId)
+      .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT leave.id,leave.teacher_id AS teacherId,teacher.display_name AS teacher,
+        leave.starts_on AS startsOn,leave.ends_on AS endsOn,
+        leave.reason,leave.status,
+        (SELECT COUNT(*) FROM lesson_sessions session
+         WHERE session.teacher_id=leave.teacher_id AND session.status='scheduled'
+           AND session.session_date BETWEEN leave.starts_on AND leave.ends_on
+        ) AS affectedSessions
+      FROM teacher_leave_requests leave
+      JOIN staff_users teacher ON teacher.id=leave.teacher_id
+      WHERE leave.organization_id=?
+      ORDER BY leave.created_at DESC LIMIT 30`)
+      .bind(account.organizationId)
+      .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT substitution.id,
+        session.session_date AS sessionDate,series.name AS className,
+        original.display_name AS originalTeacher,
+        substitute.display_name AS substituteTeacher,
+        substitution.status,substitution.reason
+      FROM teacher_substitutions substitution
+      JOIN lesson_sessions session ON session.id=substitution.lesson_session_id
+      JOIN class_series series ON series.id=session.class_series_id
+      JOIN staff_users original ON original.id=substitution.original_teacher_id
+      JOIN staff_users substitute ON substitute.id=substitution.substitute_teacher_id
+      ORDER BY substitution.created_at DESC LIMIT 30`)
+      .all<Record<string, string | number | null>>(),
   ]);
   const trialAttention = [
     ...pendingTrialOutcomes.results,
@@ -352,6 +403,10 @@ async function operationsOverview(
       { id: "trials", title: "试听结果", rows: trials.results },
       { id: "tasks", title: "待跟进任务", rows: tasks.results },
       { id: "schedule", title: "本周课表", rows: schedule.results },
+      { id: "orders", title: "续费订单", rows: ordersResult.results },
+      { id: "refunds", title: "退款申请", rows: refundsResult.results },
+      { id: "teacher-leave", title: "老师请假", rows: leaveRequests.results },
+      { id: "substitutions", title: "代课安排", rows: substitutions.results },
       {
         id: "students",
         title: "学生与课时",

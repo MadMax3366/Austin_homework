@@ -841,6 +841,12 @@ VALUES
   ('payroll_trial_seed_entry','payroll_current','trial_session_completed_seed',
    'staff_teacher_arjun','trial',60,4200,0,'accrued','Seeded completed trial lesson');
 
+INSERT OR IGNORE INTO teacher_leave_requests
+  (id,organization_id,teacher_id,starts_on,ends_on,reason,status,requested_by_account_id)
+VALUES
+  ('leave_arjun_seed','org_austin','staff_teacher_arjun','${tomorrow}','${tomorrow}',
+   '个人事务','requested','account_teacher_02');
+
 INSERT OR IGNORE INTO orders
   (id,organization_id,student_id,created_by_account_id,order_type,status,
    amount_cents,credit_quantity,currency,description,paid_at)

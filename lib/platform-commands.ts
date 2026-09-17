@@ -735,6 +735,169 @@ async function transferStudentOwner(
   return { action: input.action, entityId: student.id, message: "学生负责人已更新。" };
 }
 
+async function requestTeacherLeave(
+  context: CommandContext,
+  input: Extract<PlatformCommandInput, { action: "request_teacher_leave" }>,
+): Promise<PlatformCommandResult> {
+  allow(context, ["teacher", "operations_admin", "manager_admin"]);
+  const linkedStaffId = requireStaffId(context);
+  const teacherId = context.role === "teacher" ? linkedStaffId : input.teacherId;
+  if (!teacherId) throw new AppError(422, "TEACHER_REQUIRED", "请选择老师。");
+  if (context.role === "teacher" && input.teacherId && input.teacherId !== linkedStaffId) {
+    throw new AppError(403, "TEACHER_SCOPE_FORBIDDEN", "教师只能提交自己的请假申请。");
+  }
+  if (input.startsOn < melbourneDate() || input.endsOn < input.startsOn) {
+    throw new AppError(422, "LEAVE_DATE_INVALID", "请假日期无效。");
+  }
+  const teacher = await getD1().prepare(
+    `SELECT id FROM staff_users WHERE id=? AND role='teacher' AND active=1 LIMIT 1`,
+  ).bind(teacherId).first<{ id: string }>();
+  if (!teacher) throw new AppError(422, "TEACHER_UNAVAILABLE", "老师账号不可用。");
+  const overlap = await getD1().prepare(
+    `SELECT id FROM teacher_leave_requests
+     WHERE teacher_id=? AND status IN ('requested','approved')
+       AND starts_on<=? AND ?<=ends_on LIMIT 1`,
+  ).bind(teacherId, input.endsOn, input.startsOn).first<{ id: string }>();
+  if (overlap) throw new AppError(409, "LEAVE_REQUEST_OVERLAP", "该日期已有请假申请。");
+  const leaveId = makeId("leave");
+  await getD1().batch([
+    getD1().prepare(
+      `INSERT INTO teacher_leave_requests
+        (id,organization_id,teacher_id,starts_on,ends_on,reason,status,requested_by_account_id)
+       VALUES (?,?,?,?,?,?,'requested',?)`,
+    ).bind(
+      leaveId,
+      context.account.organizationId,
+      teacherId,
+      input.startsOn,
+      input.endsOn,
+      input.reason,
+      context.account.id,
+    ),
+    auditStatement(linkedStaffId, "teacher_leave.requested", "teacher_leave", leaveId),
+  ]);
+  return { action: input.action, entityId: leaveId, message: "请假申请已提交。" };
+}
+
+async function decideTeacherLeave(
+  context: CommandContext,
+  input: Extract<PlatformCommandInput, { action: "decide_teacher_leave" }>,
+): Promise<PlatformCommandResult> {
+  allow(context, ["operations_admin", "manager_admin"]);
+  const actorId = requireStaffId(context);
+  const leave = await getD1().prepare(
+    `SELECT id,teacher_id AS teacherId,starts_on AS startsOn,ends_on AS endsOn,status
+     FROM teacher_leave_requests WHERE id=? LIMIT 1`,
+  ).bind(input.leaveRequestId).first<{
+    id: string; teacherId: string; startsOn: string; endsOn: string; status: string;
+  }>();
+  if (!leave) throw new AppError(404, "LEAVE_REQUEST_NOT_FOUND", "未找到请假申请。");
+  if (leave.status !== "requested") {
+    throw new AppError(409, "LEAVE_REQUEST_DECIDED", "请假申请已处理。");
+  }
+  const status = input.approve ? "approved" : "rejected";
+  const affected = await getD1().prepare(
+    `SELECT COUNT(*) AS count FROM lesson_sessions
+     WHERE teacher_id=? AND status='scheduled' AND session_date BETWEEN ? AND ?`,
+  ).bind(leave.teacherId, leave.startsOn, leave.endsOn).first<{ count: number }>();
+  await getD1().batch([
+    getD1().prepare(
+      `UPDATE teacher_leave_requests
+       SET status=?,decided_by_id=?,decided_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND status='requested'`,
+    ).bind(status, actorId, leave.id),
+    auditStatement(actorId, `teacher_leave.${status}`, "teacher_leave", leave.id, {
+      affectedSessions: Number(affected?.count ?? 0),
+    }),
+  ]);
+  return {
+    action: input.action,
+    entityId: leave.id,
+    message: input.approve ? "请假申请已批准，请安排代课。" : "请假申请已拒绝。",
+    details: { affectedSessions: Number(affected?.count ?? 0) },
+  };
+}
+
+async function assignSubstitute(
+  context: CommandContext,
+  input: Extract<PlatformCommandInput, { action: "assign_substitute" }>,
+): Promise<PlatformCommandResult> {
+  allow(context, ["operations_admin", "manager_admin"]);
+  const actorId = requireStaffId(context);
+  const leave = await getD1().prepare(
+    `SELECT id,teacher_id AS teacherId,starts_on AS startsOn,ends_on AS endsOn,status
+     FROM teacher_leave_requests WHERE id=? LIMIT 1`,
+  ).bind(input.leaveRequestId).first<{
+    id: string; teacherId: string; startsOn: string; endsOn: string; status: string;
+  }>();
+  if (!leave || leave.status !== "approved") {
+    throw new AppError(409, "LEAVE_NOT_APPROVED", "请先批准请假申请。");
+  }
+  const session = await getD1().prepare(
+    `SELECT id,teacher_id AS teacherId,session_date AS sessionDate,
+            local_start_time AS startTime,local_end_time AS endTime,status
+     FROM lesson_sessions WHERE id=? LIMIT 1`,
+  ).bind(input.sessionId).first<{
+    id: string; teacherId: string; sessionDate: string;
+    startTime: string; endTime: string; status: string;
+  }>();
+  if (!session || session.status !== "scheduled") {
+    throw new AppError(409, "SESSION_NOT_REASSIGNABLE", "该课次不能安排代课。");
+  }
+  if (
+    session.teacherId !== leave.teacherId ||
+    session.sessionDate < leave.startsOn ||
+    session.sessionDate > leave.endsOn
+  ) {
+    throw new AppError(409, "SESSION_OUTSIDE_LEAVE", "该课次不在请假影响范围内。");
+  }
+  const substitute = await getD1().prepare(
+    `SELECT id FROM staff_users WHERE id=? AND role='teacher' AND active=1 LIMIT 1`,
+  ).bind(input.substituteTeacherId).first<{ id: string }>();
+  if (!substitute || substitute.id === leave.teacherId) {
+    throw new AppError(422, "SUBSTITUTE_UNAVAILABLE", "代课老师无效。");
+  }
+  const conflict = await getD1().prepare(
+    `SELECT id FROM lesson_sessions
+     WHERE teacher_id=? AND session_date=? AND status<>'cancelled' AND id<>?
+       AND local_start_time<? AND ?<local_end_time LIMIT 1`,
+  ).bind(
+    substitute.id,
+    session.sessionDate,
+    session.id,
+    session.endTime,
+    session.startTime,
+  ).first<{ id: string }>();
+  if (conflict) throw new AppError(409, "TEACHER_SCHEDULE_CONFLICT", "代课老师在该时段已有课程。");
+  const substitutionId = makeId("substitution");
+  await getD1().batch([
+    getD1().prepare(
+      `INSERT INTO teacher_substitutions
+        (id,leave_request_id,lesson_session_id,original_teacher_id,
+         substitute_teacher_id,assigned_by_id,status,reason)
+       VALUES (?,?,?,?,?,?,'assigned',?)`,
+    ).bind(
+      substitutionId,
+      leave.id,
+      session.id,
+      leave.teacherId,
+      substitute.id,
+      actorId,
+      input.reason,
+    ),
+    getD1().prepare(
+      `UPDATE lesson_sessions SET teacher_id=?,updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND teacher_id=? AND status='scheduled'`,
+    ).bind(substitute.id, session.id, leave.teacherId),
+    auditStatement(actorId, "teacher_substitution.assigned", "lesson_session", session.id, {
+      leaveRequestId: leave.id,
+      originalTeacherId: leave.teacherId,
+      substituteTeacherId: substitute.id,
+    }),
+  ]);
+  return { action: input.action, entityId: substitutionId, message: "代课老师已安排。" };
+}
+
 async function sandboxPayOrder(
   context: CommandContext,
   input: Extract<PlatformCommandInput, { action: "sandbox_pay_order" }>,
@@ -1218,6 +1381,9 @@ export async function executePlatformCommand(
       case "enroll_student": return await enrollStudent(context, input);
       case "end_enrollment": return await endEnrollment(context, input);
       case "transfer_student_owner": return await transferStudentOwner(context, input);
+      case "request_teacher_leave": return await requestTeacherLeave(context, input);
+      case "decide_teacher_leave": return await decideTeacherLeave(context, input);
+      case "assign_substitute": return await assignSubstitute(context, input);
       case "sandbox_pay_order": return await sandboxPayOrder(context, input);
       case "complete_follow_up": return await completeFollowUp(context, input);
       case "request_refund": return await requestRefund(context, input);

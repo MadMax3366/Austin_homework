@@ -129,6 +129,25 @@ export const platformCommandSchema = z.discriminatedUnion("action", [
     newOwnerId: idField,
   }),
   strictCommand({
+    action: z.literal("request_teacher_leave"),
+    teacherId: idField.optional(),
+    startsOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    endsOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    reason: noteField,
+  }),
+  strictCommand({
+    action: z.literal("decide_teacher_leave"),
+    leaveRequestId: idField,
+    approve: z.boolean(),
+  }),
+  strictCommand({
+    action: z.literal("assign_substitute"),
+    leaveRequestId: idField,
+    sessionId: idField,
+    substituteTeacherId: idField,
+    reason: noteField,
+  }),
+  strictCommand({
     action: z.literal("sandbox_pay_order"),
     orderId: idField,
     providerEventId: idField,

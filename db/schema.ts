@@ -769,6 +769,96 @@ export const rooms = sqliteTable(
   ],
 );
 
+export const teacherLeaveRequests = sqliteTable(
+  "teacher_leave_requests",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    teacherId: text("teacher_id")
+      .notNull()
+      .references(() => staffUsers.id),
+    startsOn: text("starts_on").notNull(),
+    endsOn: text("ends_on").notNull(),
+    reason: text("reason").notNull(),
+    status: text("status", {
+      enum: ["requested", "approved", "rejected", "cancelled"],
+    })
+      .notNull()
+      .default("requested"),
+    requestedByAccountId: text("requested_by_account_id")
+      .notNull()
+      .references(() => userAccounts.id),
+    decidedById: text("decided_by_id").references(() => staffUsers.id),
+    decidedAt: text("decided_at"),
+    ...timestamps,
+  },
+  (table) => [
+    index("idx_teacher_leave_teacher_dates").on(
+      table.teacherId,
+      table.startsOn,
+      table.endsOn,
+    ),
+    index("idx_teacher_leave_status_dates").on(
+      table.status,
+      table.startsOn,
+    ),
+    check(
+      "ck_teacher_leave_status",
+      sql`${table.status} IN ('requested','approved','rejected','cancelled')`,
+    ),
+    check(
+      "ck_teacher_leave_date_order",
+      sql`${table.startsOn} <= ${table.endsOn}`,
+    ),
+  ],
+);
+
+export const teacherSubstitutions = sqliteTable(
+  "teacher_substitutions",
+  {
+    id: text("id").primaryKey(),
+    leaveRequestId: text("leave_request_id").references(
+      () => teacherLeaveRequests.id,
+    ),
+    lessonSessionId: text("lesson_session_id")
+      .notNull()
+      .references(() => lessonSessions.id),
+    originalTeacherId: text("original_teacher_id")
+      .notNull()
+      .references(() => staffUsers.id),
+    substituteTeacherId: text("substitute_teacher_id")
+      .notNull()
+      .references(() => staffUsers.id),
+    assignedById: text("assigned_by_id")
+      .notNull()
+      .references(() => staffUsers.id),
+    status: text("status", {
+      enum: ["assigned", "completed", "cancelled"],
+    })
+      .notNull()
+      .default("assigned"),
+    reason: text("reason").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("uq_teacher_substitution_session").on(table.lessonSessionId),
+    index("idx_teacher_substitution_teacher_status").on(
+      table.substituteTeacherId,
+      table.status,
+    ),
+    check(
+      "ck_teacher_substitution_status",
+      sql`${table.status} IN ('assigned','completed','cancelled')`,
+    ),
+    check(
+      "ck_teacher_substitution_distinct",
+      sql`${table.originalTeacherId} <> ${table.substituteTeacherId}`,
+    ),
+  ],
+);
+
 export const inquiries = sqliteTable(
   "inquiries",
   {
