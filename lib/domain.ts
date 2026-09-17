@@ -67,6 +67,106 @@ export const billingResolutionSchema = z
 
 export type BillingResolutionInput = z.infer<typeof billingResolutionSchema>;
 
+const idField = z.string().trim().min(1).max(120);
+const noteField = z.string().trim().min(2).max(1_000);
+const strictCommand = <Shape extends z.ZodRawShape>(shape: Shape) =>
+  z.object(shape).strict();
+
+export const platformCommandSchema = z.discriminatedUnion("action", [
+  strictCommand({
+    action: z.literal("create_inquiry"),
+    studentName: z.string().trim().min(2).max(120),
+    birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    guardianName: z.string().trim().min(2).max(120),
+    guardianEmail: z.string().email().max(240),
+    guardianPhone: z.string().trim().min(6).max(40),
+    source: z.string().trim().min(2).max(80),
+    notes: z.string().trim().max(2_000).default(""),
+  }),
+  strictCommand({
+    action: z.literal("schedule_trial"),
+    inquiryId: idField,
+    teacherId: idField,
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    startTime: z.string().regex(/^\d{2}:\d{2}$/),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/),
+    room: z.string().trim().min(1).max(80),
+  }),
+  strictCommand({
+    action: z.literal("record_trial_outcome"),
+    trialBookingId: idField,
+    outcome: z.enum(["attended", "no_show", "cancelled"]),
+    decision: z.enum(["enrol", "follow_up", "not_fit"]),
+    notes: noteField,
+  }),
+  strictCommand({
+    action: z.literal("convert_inquiry"),
+    inquiryId: idField,
+    classSeriesId: idField,
+    creditQuantity: z.number().int().positive().max(500),
+    amountCents: z.number().int().positive().max(10_000_000),
+  }),
+  strictCommand({
+    action: z.literal("create_order"),
+    studentId: idField,
+    creditQuantity: z.number().int().positive().max(500),
+    amountCents: z.number().int().positive().max(10_000_000),
+    description: z.string().trim().min(2).max(240),
+  }),
+  strictCommand({
+    action: z.literal("sandbox_pay_order"),
+    orderId: idField,
+    providerEventId: idField,
+  }),
+  strictCommand({
+    action: z.literal("complete_follow_up"),
+    taskId: idField,
+    note: noteField,
+  }),
+  strictCommand({
+    action: z.literal("request_refund"),
+    orderId: idField,
+    amountCents: z.number().int().positive().max(10_000_000),
+    reason: noteField,
+  }),
+  strictCommand({
+    action: z.literal("approve_refund"),
+    refundId: idField,
+    approve: z.boolean(),
+    note: noteField,
+  }),
+  strictCommand({
+    action: z.literal("approve_payroll_period"),
+    payrollPeriodId: idField,
+  }),
+  strictCommand({
+    action: z.literal("mark_payroll_paid"),
+    payrollPeriodId: idField,
+  }),
+  strictCommand({
+    action: z.literal("process_outbox"),
+    limit: z.number().int().min(1).max(100).default(20),
+  }),
+  strictCommand({
+    action: z.literal("request_support_session"),
+    reason: noteField,
+    scope: z.array(z.string().trim().min(1).max(80)).min(1).max(20),
+    minutes: z.number().int().min(5).max(120),
+  }),
+  strictCommand({
+    action: z.literal("approve_support_session"),
+    supportSessionId: idField,
+    minutes: z.number().int().min(5).max(120),
+  }),
+  strictCommand({
+    action: z.literal("update_setting"),
+    key: z.string().trim().min(2).max(100),
+    value: z.unknown(),
+  }),
+]);
+
+export type PlatformCommandInput = z.infer<typeof platformCommandSchema>;
+
 export function isBillable(status: AttendanceStatus): boolean {
   return status === "present" || status === "late";
 }

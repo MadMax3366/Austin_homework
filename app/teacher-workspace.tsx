@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   AlertCircle,
   BookOpen,
@@ -15,6 +16,7 @@ import {
   ShieldCheck,
   Sparkles,
   Users,
+  WalletCards,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -199,6 +201,13 @@ function displayTime(value: string): string {
   return `${hour}:${String(minute).padStart(2, "0")} ${suffix}`;
 }
 
+function displayMoney(cents: number): string {
+  return new Intl.NumberFormat("en-AU", {
+    style: "currency",
+    currency: "AUD",
+  }).format(cents / 100);
+}
+
 function initials(name: string): string {
   return name
     .split(/\s+/)
@@ -248,9 +257,9 @@ function WorkspaceFrame({
       <header className="sticky top-0 z-30 border-b border-[var(--navy-800)] bg-[var(--navy-950)] text-white">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-4 px-4 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--cyan-400)] text-[var(--navy-950)]">
+            <Link href="/" className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--cyan-400)] text-[var(--navy-950)]" aria-label="Switch workspace">
               <BookOpen className="size-[18px]" aria-hidden="true" />
-            </span>
+            </Link>
             <div className="min-w-0">
               <p className="truncate text-[15px] font-semibold tracking-tight">
                 Austin Education
@@ -471,10 +480,12 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
 
   const billableCount = useMemo(
     () =>
-      Object.values(attendance).filter(
-        (value) => value === "present" || value === "late",
-      ).length,
-    [attendance],
+      data?.roster.filter(
+        (student) =>
+          student.billingPolicy === "billable" &&
+          (attendance[student.id] === "present" || attendance[student.id] === "late"),
+      ).length ?? 0,
+    [attendance, data],
   );
   const unmarkedCount = useMemo(
     () => data?.roster.filter((student) => !attendance[student.id]).length ?? 0,
@@ -487,7 +498,10 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
     [attendance, data],
   );
   const lowBalanceCount = useMemo(
-    () => data?.roster.filter((student) => student.balance <= 3).length ?? 0,
+    () =>
+      data?.roster.filter(
+        (student) => student.billingPolicy === "billable" && student.balance <= 3,
+      ).length ?? 0,
     [data],
   );
   const potentialPendingCount = useMemo(
@@ -496,6 +510,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
         (student) =>
           (attendance[student.id] === "present" ||
             attendance[student.id] === "late") &&
+          student.billingPolicy === "billable" &&
           student.balance < 1,
       ).length ?? 0,
     [attendance, data],
@@ -855,6 +870,17 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
               </Button>
             </EmptyContent>
           </Empty>
+          {data ? (
+            <div className="mt-5 rounded-2xl border border-border bg-white p-6">
+              <p className="text-sm font-semibold text-muted-foreground">Current payroll period</p>
+              <p className="mt-1 text-2xl font-semibold text-[var(--navy-950)]">
+                {displayMoney(data.payroll.currentAmountCents)}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {data.payroll.currentPeriod?.status ?? "No open period"} · {data.payroll.recentEntries.length} recent entries
+              </p>
+            </div>
+          ) : null}
         </div>
       </WorkspaceFrame>
     );
@@ -970,6 +996,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                           ? "Upcoming"
                           : "Ready to finalise"}
                   </Badge>
+                  <Badge variant="outline">{session.kind}</Badge>
                   <span className="text-sm text-muted-foreground">
                     {displayDate(session.date)}
                   </span>
@@ -988,12 +1015,19 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
               </div>
             </div>
 
-            <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <div className="summary-card">
                 <Users />
                 <div>
                   <span>Roster</span>
                   <strong>{data.roster.length} students</strong>
+                </div>
+              </div>
+              <div className="summary-card">
+                <WalletCards />
+                <div>
+                  <span>Current payroll</span>
+                  <strong>{displayMoney(data.payroll.currentAmountCents)}</strong>
                 </div>
               </div>
               <div className="summary-card">
@@ -1067,7 +1101,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
               </div>
               <div className="flex flex-wrap items-center justify-end gap-3">
                 <p className="hidden text-sm text-muted-foreground sm:block">
-                  Present and late students use one lesson credit.
+                  Present and late enrolled students use one lesson credit; trial participants are free.
                 </p>
                 {!locked && (
                   <Button
@@ -1102,7 +1136,8 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   const nextBalance =
                     locked ||
                     status === null ||
-                    status === "absent"
+                    status === "absent" ||
+                    student.billingPolicy === "trial_free"
                       ? student.balance
                       : Math.max(0, student.balance - 1);
                   const pending =
@@ -1110,6 +1145,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                       ? student.billingStatus ===
                         "pending_insufficient_credit"
                       : (status === "present" || status === "late") &&
+                        student.billingPolicy === "billable" &&
                         student.balance < 1;
 
                   return (
@@ -1133,6 +1169,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                               >
                                 New
                               </Badge>
+                            )}
+                            {student.billingPolicy === "trial_free" && (
+                              <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700">Trial · no credit</Badge>
                             )}
                           </div>
                           <p className="mt-0.5 truncate text-sm text-muted-foreground">
@@ -1495,7 +1534,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid grid-cols-2 gap-3 rounded-lg bg-slate-50 p-4 text-sm sm:grid-cols-4">
-            <div><span className="text-muted-foreground">Present / late</span><strong className="block text-lg">{billableCount}</strong></div>
+            <div><span className="text-muted-foreground">Billable present / late</span><strong className="block text-lg">{billableCount}</strong></div>
             <div><span className="text-muted-foreground">Absent</span><strong className="block text-lg">{absentCount}</strong></div>
             <div><span className="text-muted-foreground">Credits charged</span><strong className="block text-lg">{billableCount - potentialPendingCount}</strong></div>
             <div><span className="text-muted-foreground">Admin review</span><strong className="block text-lg text-amber-700">{potentialPendingCount}</strong></div>

@@ -24,6 +24,7 @@ type SessionRow = {
   startTime: string;
   endTime: string;
   status: SessionSummary["status"];
+  kind: SessionSummary["kind"];
   version: number;
   rosterCount: number;
 };
@@ -36,6 +37,8 @@ type RosterRow = {
   isNew: number;
   attendanceStatus: RosterStudent["attendanceStatus"] | null;
   billingStatus: RosterStudent["billingStatus"];
+  source: "enrollment" | "trial" | "makeup" | "manual";
+  sessionKind: SessionSummary["kind"];
 };
 
 function timingFor(
@@ -69,6 +72,7 @@ function mapSession(row: SessionRow, now: Date): SessionSummary {
     startTime: row.startTime,
     endTime: row.endTime,
     status: row.status,
+    kind: row.kind,
     version: Number(row.version),
     rosterCount: Number(row.rosterCount),
     timing: timingFor(row.sessionDate, row.startTime, row.endTime, now),
@@ -90,8 +94,8 @@ export async function loadTeacherWorkspace(
 
   const db = getD1();
   const today = melbourneDate(now);
-  const sessionResult = await db
-    .prepare(
+  const [sessionResult, payrollPeriod, payrollEntries] = await Promise.all([
+    db.prepare(
       `SELECT
         ls.id,
         cs.name AS title,
@@ -101,6 +105,7 @@ export async function loadTeacherWorkspace(
         ls.local_start_time AS startTime,
         ls.local_end_time AS endTime,
         ls.status,
+        ls.session_kind AS kind,
         ls.version,
         COUNT(participant.id) AS rosterCount
        FROM lesson_sessions ls
@@ -112,11 +117,61 @@ export async function loadTeacherWorkspace(
         AND ls.session_date = ?
        GROUP BY
         ls.id, cs.name, cs.subject, cs.room, ls.session_date,
-        ls.local_start_time, ls.local_end_time, ls.status, ls.version
+        ls.local_start_time, ls.local_end_time, ls.status,ls.session_kind,ls.version
        ORDER BY ls.local_start_time`,
     )
     .bind(staff.id, today)
-    .all<SessionRow>();
+    .all<SessionRow>(),
+    db.prepare(
+      `SELECT period.id,period.starts_on AS startsOn,period.ends_on AS endsOn,
+              period.status,
+              COALESCE(SUM(entry.base_amount_cents+entry.adjustment_cents),0) AS amountCents
+       FROM payroll_periods period
+       LEFT JOIN payroll_entries entry
+         ON entry.payroll_period_id=period.id AND entry.teacher_id=?
+       WHERE period.starts_on<=? AND period.ends_on>=?
+       GROUP BY period.id ORDER BY period.starts_on DESC LIMIT 1`,
+    ).bind(staff.id, today, today).first<{
+      id: string;
+      startsOn: string;
+      endsOn: string;
+      status: "open" | "approved" | "paid";
+      amountCents: number;
+    }>(),
+    db.prepare(
+      `SELECT entry.id,session.session_date AS sessionDate,
+              series.name AS className,entry.session_kind AS kind,
+              entry.base_amount_cents+entry.adjustment_cents AS amountCents,
+              entry.status
+       FROM payroll_entries entry
+       JOIN lesson_sessions session ON session.id=entry.lesson_session_id
+       JOIN class_series series ON series.id=session.class_series_id
+       WHERE entry.teacher_id=? ORDER BY session.session_date DESC LIMIT 12`,
+    ).bind(staff.id).all<{
+      id: string;
+      sessionDate: string;
+      className: string;
+      kind: string;
+      amountCents: number;
+      status: string;
+    }>(),
+  ]);
+
+  const payroll: TeacherWorkspaceData["payroll"] = {
+    currentPeriod: payrollPeriod
+      ? {
+          id: payrollPeriod.id,
+          startsOn: payrollPeriod.startsOn,
+          endsOn: payrollPeriod.endsOn,
+          status: payrollPeriod.status,
+        }
+      : null,
+    currentAmountCents: Number(payrollPeriod?.amountCents ?? 0),
+    recentEntries: payrollEntries.results.map((entry) => ({
+      ...entry,
+      amountCents: Number(entry.amountCents),
+    })),
+  };
 
   const sessions = sessionResult.results.map((row) => mapSession(row, now));
   let selectedSession: SessionSummary | null = null;
@@ -152,6 +207,7 @@ export async function loadTeacherWorkspace(
       roster: [],
       rawClassNotes: "",
       feedback: null,
+      payroll,
     };
   }
 
@@ -173,6 +229,8 @@ export async function loadTeacherWorkspace(
           participant.date_of_birth AS dateOfBirth,
           COALESCE(SUM(ct.quantity), 0) AS balance,
           participant.is_new AS isNew,
+          participant.source,
+          ls.session_kind AS sessionKind,
           a.status AS attendanceStatus,
           a.billing_status AS billingStatus
          FROM lesson_sessions ls
@@ -189,7 +247,8 @@ export async function loadTeacherWorkspace(
          GROUP BY
           participant.student_id, participant.display_name,
           participant.date_of_birth, participant.is_new,
-          participant.sort_order, ls.session_date, a.status, a.billing_status
+          participant.source,participant.sort_order,ls.session_date,
+          ls.session_kind,a.status,a.billing_status
          ORDER BY participant.sort_order, participant.display_name`,
       )
       .bind(selectedSession.id, staff.id)
@@ -203,6 +262,10 @@ export async function loadTeacherWorkspace(
     age: calculateAge(row.dateOfBirth, selectedSession.date),
     balance: Number(row.balance),
     isNew: Boolean(row.isNew),
+    billingPolicy:
+      row.source === "trial" || row.sessionKind === "trial"
+        ? "trial_free"
+        : "billable",
     attendanceStatus: row.attendanceStatus,
     billingStatus: row.billingStatus,
   }));
@@ -230,5 +293,6 @@ export async function loadTeacherWorkspace(
     roster,
     rawClassNotes: detail?.rawClassNotes ?? "",
     feedback,
+    payroll,
   };
 }

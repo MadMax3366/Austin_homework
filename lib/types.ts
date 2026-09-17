@@ -9,6 +9,7 @@ export type SessionSummary = {
   startTime: string;
   endTime: string;
   status: "scheduled" | "completed" | "cancelled";
+  kind: "regular" | "trial" | "makeup" | "private";
   version: number;
   rosterCount: number;
   timing: "past" | "active" | "upcoming";
@@ -21,6 +22,7 @@ export type RosterStudent = {
   age: number;
   balance: number;
   isNew: boolean;
+  billingPolicy: "billable" | "trial_free";
   attendanceStatus: AttendanceStatus | null;
   billingStatus:
     | "charged"
@@ -42,6 +44,23 @@ export type TeacherWorkspaceData = {
   roster: RosterStudent[];
   rawClassNotes: string;
   feedback: FeedbackDraft | null;
+  payroll: {
+    currentPeriod: {
+      id: string;
+      startsOn: string;
+      endsOn: string;
+      status: "open" | "approved" | "paid";
+    } | null;
+    currentAmountCents: number;
+    recentEntries: Array<{
+      id: string;
+      sessionDate: string;
+      className: string;
+      kind: string;
+      amountCents: number;
+      status: string;
+    }>;
+  };
 };
 
 export type CompleteClassResult = {

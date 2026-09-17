@@ -1,0 +1,458 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import {
+  AlertCircle,
+  ArrowLeftRight,
+  BookOpen,
+  CheckCircle2,
+  LogOut,
+  Play,
+  RefreshCw,
+  Send,
+  ShieldAlert,
+  WalletCards,
+} from "lucide-react";
+import { toast } from "sonner";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { Toaster } from "@/components/ui/sonner";
+import type { PlatformRole } from "@/lib/account-auth";
+import type { PlatformCommandInput } from "@/lib/domain";
+import type { PlatformCommandResult } from "@/lib/platform-commands";
+import type { PlatformOverview } from "@/lib/platform-overview";
+
+type Viewer = { displayName: string; email: string; signOutPath: string };
+type Row = Record<string, string | number | null>;
+
+const roleLabels: Record<PlatformRole, string> = {
+  teacher: "教师",
+  operations_admin: "运营",
+  manager_admin: "主管",
+  student: "学生",
+  guardian: "家长",
+  system_admin: "系统管理员",
+};
+
+class ClientApiError extends Error {
+  constructor(public code: string, message: string) {
+    super(message);
+  }
+}
+
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
+    });
+    const text = await response.text();
+    const payload = text ? (JSON.parse(text) as T | { error?: { code?: string; message?: string } }) : null;
+    if (!response.ok) {
+      const body = payload as { error?: { code?: string; message?: string } } | null;
+      throw new ClientApiError(body?.error?.code ?? "REQUEST_FAILED", body?.error?.message ?? "请求失败。");
+    }
+    if (!payload) throw new ClientApiError("EMPTY_RESPONSE", "服务器返回了空响应。");
+    return payload as T;
+  } catch (error) {
+    if (error instanceof ClientApiError) throw error;
+    if (controller.signal.aborted) throw new ClientApiError("REQUEST_TIMEOUT", "请求超时，请确认结果后再重试。");
+    throw new ClientApiError("NETWORK_UNAVAILABLE", "网络暂时不可用。");
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function displayKey(value: string): string {
+  return value
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function displayValue(key: string, value: string | number | null): React.ReactNode {
+  if (value === null || value === "") return <span className="text-muted-foreground">—</span>;
+  if (/amountCents$/i.test(key) && typeof value === "number") {
+    return new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(value / 100);
+  }
+  if (key === "status" || key === "kind" || key === "type" || key === "mode") {
+    return <Badge variant="outline" className="font-normal">{String(value).replaceAll("_", " ")}</Badge>;
+  }
+  const text = String(value);
+  return <span title={text} className="block max-w-72 truncate">{text}</span>;
+}
+
+function DataTable({ rows }: { rows: Row[] }) {
+  const columns = useMemo(() => {
+    const keys: string[] = [];
+    for (const row of rows) {
+      for (const key of Object.keys(row)) if (!keys.includes(key)) keys.push(key);
+    }
+    return keys.slice(0, 9);
+  }, [rows]);
+  if (!rows.length) {
+    return <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">当前没有记录。</div>;
+  }
+  return (
+    <div className="rounded-xl border bg-white">
+      <Table>
+        <TableHeader>
+          <TableRow>{columns.map((column) => <TableHead key={column}>{displayKey(column)}</TableHead>)}</TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row, index) => (
+            <TableRow key={String(row.id ?? index)}>
+              {columns.map((column) => <TableCell key={column}>{displayValue(column, row[column] ?? null)}</TableCell>)}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function Field({ label, value, onChange, type = "text", required = true }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  required?: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} />
+    </div>
+  );
+}
+
+function OperationsActions({ data, run, busy }: {
+  data: PlatformOverview;
+  run: (command: PlatformCommandInput) => Promise<void>;
+  busy: boolean;
+}) {
+  const inquiryRows = data.sections.find((section) => section.id === "inquiries")?.rows ?? [];
+  const trialRows = data.sections.find((section) => section.id === "trials")?.rows ?? [];
+  const taskRows = data.sections.find((section) => section.id === "tasks")?.rows ?? [];
+  const resources = data.sections.find((section) => section.id === "resources")?.rows ?? [];
+  const teacher = resources.find((row) => row.type === "teacher");
+  const room = resources.find((row) => row.type === "room");
+  const targetClass = resources.find((row) => row.type === "class");
+  const [mode, setMode] = useState("create");
+  const [studentName, setStudentName] = useState("Avery Demo");
+  const [birthDate, setBirthDate] = useState("2015-04-12");
+  const [guardianName, setGuardianName] = useState("Morgan Demo");
+  const [guardianEmail, setGuardianEmail] = useState("morgan.demo@example.test");
+  const [guardianPhone, setGuardianPhone] = useState("0400 000 088");
+  const [source, setSource] = useState("Website");
+  const [inquiryId, setInquiryId] = useState(String(inquiryRows.find((row) => row.status === "new")?.id ?? inquiryRows[0]?.id ?? ""));
+  const [teacherId, setTeacherId] = useState(String(teacher?.id ?? ""));
+  const [roomName, setRoomName] = useState(String(room?.name ?? ""));
+  const [trialDate, setTrialDate] = useState("");
+  const [trialBookingId, setTrialBookingId] = useState(String(trialRows.find((row) => row.outcome === "pending" && row.sessionStatus === "completed")?.id ?? trialRows[0]?.id ?? ""));
+  const [conversionInquiryId, setConversionInquiryId] = useState(String(inquiryRows.find((row) => row.status === "trial_completed")?.id ?? ""));
+  const [classSeriesId, setClassSeriesId] = useState(String(targetClass?.id ?? ""));
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (mode === "create") {
+      await run({ action: "create_inquiry", studentName, birthDate, guardianName, guardianEmail, guardianPhone, source, notes: "Created from operations workspace" });
+    } else if (mode === "trial") {
+      await run({ action: "schedule_trial", inquiryId, teacherId, room: roomName, date: trialDate, startTime: "12:00", endTime: "13:00" });
+    } else if (mode === "outcome") {
+      await run({ action: "record_trial_outcome", trialBookingId, outcome: "attended", decision: "enrol", notes: "Trial attended; family would like to enrol" });
+    } else {
+      await run({ action: "convert_inquiry", inquiryId: conversionInquiryId, classSeriesId, creditQuantity: 8, amountCents: 48000 });
+    }
+  };
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>运营动作</CardTitle>
+        <CardDescription>写操作同时执行对象授权、状态机和冲突检查。</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted p-1">
+          <Button type="button" variant={mode === "create" ? "default" : "ghost"} size="sm" onClick={() => setMode("create")}>新咨询</Button>
+          <Button type="button" variant={mode === "trial" ? "default" : "ghost"} size="sm" onClick={() => setMode("trial")}>排试听</Button>
+          <Button type="button" variant={mode === "outcome" ? "default" : "ghost"} size="sm" onClick={() => setMode("outcome")}>试听结果</Button>
+          <Button type="button" variant={mode === "convert" ? "default" : "ghost"} size="sm" onClick={() => setMode("convert")}>转正式</Button>
+        </div>
+        <form className="space-y-4" onSubmit={submit}>
+          {mode === "create" ? (
+            <>
+              <Field label="学生姓名" value={studentName} onChange={setStudentName} />
+              <Field label="出生日期" value={birthDate} onChange={setBirthDate} type="date" />
+              <Field label="监护人" value={guardianName} onChange={setGuardianName} />
+              <Field label="邮箱" value={guardianEmail} onChange={setGuardianEmail} type="email" />
+              <Field label="电话" value={guardianPhone} onChange={setGuardianPhone} />
+              <Field label="来源" value={source} onChange={setSource} />
+            </>
+          ) : mode === "trial" ? (
+            <>
+              <Field label="咨询 ID" value={inquiryId} onChange={setInquiryId} />
+              <Field label="老师 ID" value={teacherId} onChange={setTeacherId} />
+              <Field label="教室" value={roomName} onChange={setRoomName} />
+              <Field label="日期" value={trialDate} onChange={setTrialDate} type="date" />
+            </>
+          ) : mode === "outcome" ? (
+            <>
+              <Field label="试听 Booking ID" value={trialBookingId} onChange={setTrialBookingId} />
+              <p className="text-xs leading-5 text-muted-foreground">出勤必须先由老师完成；这里记录招生结论，不代替课堂点名。</p>
+            </>
+          ) : (
+            <>
+              <Field label="已完成试听的咨询 ID" value={conversionInquiryId} onChange={setConversionInquiryId} />
+              <Field label="目标班级 ID" value={classSeriesId} onChange={setClassSeriesId} />
+              <p className="text-xs leading-5 text-muted-foreground">转化会原子创建报名和首期待付订单。</p>
+            </>
+          )}
+          <Button className="w-full" disabled={busy} type="submit">
+            {busy ? <RefreshCw className="animate-spin" /> : <Play />}
+            {mode === "create" ? "创建咨询与跟进" : mode === "trial" ? "校验冲突并排课" : mode === "outcome" ? "记录试听结果" : "转化并创建订单"}
+          </Button>
+        </form>
+        {taskRows[0] ? (
+          <Button
+            variant="outline"
+            className="w-full"
+            disabled={busy}
+            onClick={() => run({ action: "complete_follow_up", taskId: String(taskRows[0].id), note: "Contact completed from operations workspace" })}
+          >
+            <CheckCircle2 />完成最早跟进任务
+          </Button>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ManagerActions({ data, run, busy }: {
+  data: PlatformOverview;
+  run: (command: PlatformCommandInput) => Promise<void>;
+  busy: boolean;
+}) {
+  const refund = data.sections.find((section) => section.id === "refunds")?.rows.find((row) => row.status === "requested");
+  const period = data.sections.find((section) => section.id === "payroll-periods")?.rows[0];
+  const support = data.sections.find((section) => section.id === "support")?.rows.find((row) => row.status === "requested");
+  return (
+    <Card>
+      <CardHeader><CardTitle>审批队列</CardTitle><CardDescription>高风险动作要求独立角色，并保留不可变审计。</CardDescription></CardHeader>
+      <CardContent className="space-y-3">
+        <Button className="w-full justify-start" disabled={busy || !refund} onClick={() => refund && run({ action: "approve_refund", refundId: String(refund.id), approve: true, note: "Reviewed: unused package may be refunded" })}>
+          <WalletCards />批准首条待处理退款
+        </Button>
+        <Button variant="outline" className="w-full justify-start" disabled={busy || !period || period.status === "paid"} onClick={() => period && run({ action: period.status === "open" ? "approve_payroll_period" : "mark_payroll_paid", payrollPeriodId: String(period.id) })}>
+          <CheckCircle2 />{period?.status === "open" ? "审批当前薪资周期" : "标记薪资已支付"}
+        </Button>
+        <Button variant="outline" className="w-full justify-start" disabled={busy || !support} onClick={() => support && run({ action: "approve_support_session", supportSessionId: String(support.id), minutes: 30 })}>
+          <ShieldAlert />批准独立的限时支持
+        </Button>
+        {!support ? <p className="text-xs leading-5 text-muted-foreground">没有待审批的技术支持申请。系统管理员不能审批自己的申请。</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PortalActions({ data, run, busy }: {
+  data: PlatformOverview;
+  run: (command: PlatformCommandInput) => Promise<void>;
+  busy: boolean;
+}) {
+  const studentId = data.context?.studentId ?? "";
+  const pending = data.sections.find((section) => section.id === "credits")?.rows.find((row) => row.status === "pending");
+  const [credits, setCredits] = useState("4");
+  const [amount, setAmount] = useState("240");
+  return (
+    <Card>
+      <CardHeader><CardTitle>课时与续费</CardTitle><CardDescription>付款成功后才增加课时；重复回调不会重复入账。</CardDescription></CardHeader>
+      <CardContent className="space-y-4">
+        <Field label="购买课时" value={credits} onChange={setCredits} type="number" />
+        <Field label="金额（AUD）" value={amount} onChange={setAmount} type="number" />
+        <Button className="w-full" disabled={busy || !studentId} onClick={() => run({ action: "create_order", studentId, creditQuantity: Number(credits), amountCents: Math.round(Number(amount) * 100), description: `${credits} lesson renewal package` })}>
+          <WalletCards />创建续费订单
+        </Button>
+        <Button variant="outline" className="w-full" disabled={busy || !pending} onClick={() => pending && run({ action: "sandbox_pay_order", orderId: String(pending.id), providerEventId: `portal_${crypto.randomUUID().replaceAll("-", "")}` })}>
+          <Send />沙盒支付最早待付订单
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SystemActions({ run, busy }: {
+  run: (command: PlatformCommandInput) => Promise<void>;
+  busy: boolean;
+}) {
+  const [reason, setReason] = useState("Investigate failed background delivery without exposing unmasked business data");
+  return (
+    <Card>
+      <CardHeader><CardTitle>技术操作</CardTitle><CardDescription>默认只有诊断与技术队列权限；业务写入不随系统角色自动开放。</CardDescription></CardHeader>
+      <CardContent className="space-y-4">
+        <Button className="w-full" disabled={busy} onClick={() => run({ action: "process_outbox", limit: 20 })}>
+          <RefreshCw />运行一次沙盒 outbox worker
+        </Button>
+        <div className="space-y-2"><Label>紧急支持原因</Label><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></div>
+        <Button variant="outline" className="w-full" disabled={busy} onClick={() => run({ action: "request_support_session", reason, scope: ["diagnostics.read", "jobs.retry", "business.masked_read"], minutes: 30 })}>
+          <ShieldAlert />申请 30 分钟限时支持
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function PlatformWorkspace({ role, viewer, availableRoles }: {
+  role: Exclude<PlatformRole, "teacher">;
+  viewer: Viewer;
+  availableRoles: PlatformRole[];
+}) {
+  const [data, setData] = useState<PlatformOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<{ code: string; message: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const query = new URLSearchParams({ role });
+      const selectedStudent = new URLSearchParams(window.location.search).get("studentId");
+      if (selectedStudent) query.set("studentId", selectedStudent);
+      setData(await requestJson<PlatformOverview>(`/api/platform/overview?${query}`));
+    } catch (caught) {
+      const next = caught instanceof ClientApiError ? caught : new ClientApiError("LOAD_FAILED", "工作台加载失败。");
+      setError({ code: next.code, message: next.message });
+    } finally {
+      setLoading(false);
+    }
+  }, [role]);
+
+  useEffect(() => {
+    const task = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(task);
+  }, [load]);
+
+  const run = useCallback(async (command: PlatformCommandInput) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await requestJson<PlatformCommandResult>(`/api/platform/commands?role=${encodeURIComponent(role)}`, {
+        method: "POST",
+        body: JSON.stringify(command),
+      });
+      toast.success(result.message);
+      await load();
+    } catch (caught) {
+      const next = caught instanceof ClientApiError ? caught : new ClientApiError("ACTION_FAILED", "操作失败。");
+      toast.error(`${next.message} (${next.code})`);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, load, role]);
+
+  const switchGuardianStudent = (studentId: string) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("studentId", studentId);
+    window.history.replaceState({}, "", url);
+    void load();
+  };
+
+  return (
+    <main className="min-h-screen bg-[var(--canvas)] text-foreground">
+      <header className="sticky top-0 z-30 border-b border-[var(--navy-800)] bg-[var(--navy-950)] text-white">
+        <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-3 px-4 sm:px-6 lg:px-8">
+          <Link href="/" className="grid size-9 place-items-center rounded-lg bg-[var(--cyan-400)] text-[var(--navy-950)]" aria-label="Role launcher"><BookOpen className="size-[18px]" /></Link>
+          <div><p className="text-sm font-semibold">Austin Education</p><p className="text-xs text-slate-300">{roleLabels[role]}工作台</p></div>
+          <nav className="ml-auto hidden items-center gap-1 lg:flex" aria-label="Switch workspace">
+            {availableRoles.map((item) => <Link key={item} href={`/workspace/${item}`} className={`rounded-md px-3 py-2 text-xs ${item === role ? "bg-white/15 text-white" : "text-slate-300 hover:bg-white/10"}`}>{roleLabels[item]}</Link>)}
+          </nav>
+          <div className="ml-auto hidden text-right sm:block lg:ml-3"><p className="max-w-40 truncate text-sm font-medium">{viewer.displayName}</p><p className="text-xs text-slate-300">{roleLabels[role]}</p></div>
+          <Button asChild variant="ghost" size="icon" className="text-slate-300 hover:bg-white/10 hover:text-white"><a href={viewer.signOutPath} target="_top" aria-label="Sign out"><LogOut /></a></Button>
+        </div>
+      </header>
+
+      <div className="mx-auto max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8">
+        {loading ? (
+          <div className="space-y-5"><Skeleton className="h-10 w-72" /><div className="grid gap-3 sm:grid-cols-4">{[0,1,2,3].map((item) => <Skeleton key={item} className="h-24 rounded-xl" />)}</div><Skeleton className="h-96 rounded-2xl" /></div>
+        ) : error ? (
+          <Alert variant="destructive"><AlertCircle /><AlertTitle>{error.code}</AlertTitle><AlertDescription>{error.message}<Button variant="outline" size="sm" className="ml-3" onClick={() => void load()}>重试</Button></AlertDescription></Alert>
+        ) : data ? (
+          <>
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div><p className="text-sm font-semibold text-[var(--cyan-700)]">{roleLabels[role]} · Live workspace</p><h1 className="mt-1 text-3xl font-semibold tracking-[-0.035em] text-[var(--navy-950)]">{data.title}</h1></div>
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => void load()}><RefreshCw className={busy ? "animate-spin" : ""} />刷新</Button>
+            </div>
+            {role === "system_admin" ? <Alert className="mt-5"><ShieldAlert /><AlertTitle>系统权限不是业务超级管理员</AlertTitle><AlertDescription>默认仅显示技术状态和脱敏审计。临时支持需要独立主管审批、限定 scope、自动过期。</AlertDescription></Alert> : null}
+            {role === "guardian" ? (
+              <div className="mt-5 flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3">
+                <span className="mr-1 text-sm font-medium">切换关联学生</span>
+                {(data.sections.find((section) => section.id === "family")?.rows ?? []).map((student) => (
+                  <Button
+                    key={String(student.id)}
+                    size="sm"
+                    variant={String(student.id) === data.context?.studentId ? "default" : "outline"}
+                    onClick={() => switchGuardianStudent(String(student.id))}
+                  >
+                    {String(student.student)}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
+            <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {data.metrics.map((metric) => <Card key={metric.label} className={metric.tone === "warning" ? "border-amber-300 bg-amber-50/60" : metric.tone === "positive" ? "border-emerald-300 bg-emerald-50/60" : "bg-white"}><CardHeader className="pb-0"><CardDescription>{metric.label}</CardDescription><CardTitle className="text-2xl">{metric.value}</CardTitle></CardHeader></Card>)}
+            </div>
+            <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+              <Tabs defaultValue={data.sections[0]?.id} className="min-w-0">
+                <div className="overflow-x-auto pb-2"><TabsList variant="line">{data.sections.map((section) => <TabsTrigger key={section.id} value={section.id}>{section.title}<Badge variant="secondary">{section.rows.length}</Badge></TabsTrigger>)}</TabsList></div>
+                {data.sections.map((section) => <TabsContent key={section.id} value={section.id} className="mt-4"><div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-[var(--navy-950)]">{section.title}</h2><span className="text-xs text-muted-foreground">实时查询 · 最多 30 条</span></div><DataTable rows={section.rows} /></TabsContent>)}
+              </Tabs>
+              <aside>
+                {role === "operations_admin" ? (
+                  <OperationsActions
+                    key={JSON.stringify(data.sections.filter((section) => section.id === "inquiries" || section.id === "trials").map((section) => section.rows.map((row) => [row.id, row.status, row.outcome, row.decision])))}
+                    data={data}
+                    run={run}
+                    busy={busy}
+                  />
+                ) : null}
+                {role === "manager_admin" ? <ManagerActions data={data} run={run} busy={busy} /> : null}
+                {role === "student" || role === "guardian" ? <PortalActions data={data} run={run} busy={busy} /> : null}
+                {role === "system_admin" ? <SystemActions run={run} busy={busy} /> : null}
+                <Link href="/" className="mt-4 flex items-center justify-center gap-2 rounded-lg border bg-white px-4 py-3 text-sm font-medium text-[var(--navy-900)] hover:bg-muted"><ArrowLeftRight className="size-4" />切换职责</Link>
+              </aside>
+            </div>
+          </>
+        ) : null}
+      </div>
+      <Toaster position="bottom-center" />
+    </main>
+  );
+}

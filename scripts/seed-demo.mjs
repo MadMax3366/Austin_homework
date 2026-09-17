@@ -1,9 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 const projectRoot = process.cwd();
-const stateDirectory = join(projectRoot, ".wrangler");
+const configuredStateDirectory = process.env.AUS_D1_STATE_DIRECTORY ?? ".wrangler";
+const stateDirectory = isAbsolute(configuredStateDirectory)
+  ? configuredStateDirectory
+  : join(projectRoot, configuredStateDirectory);
 const seedFile = join(stateDirectory, `seed-demo-${process.pid}.sql`);
 
 function melbourneParts(now = new Date()) {
@@ -33,6 +36,18 @@ function lessonWindow(startMinutes) {
 
 const now = melbourneParts();
 const today = `${now.year}-${now.month}-${now.day}`;
+const dateFromOffset = (days) => {
+  const value = new Date(`${today}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+};
+const tomorrow = dateFromOffset(1);
+const yesterday = dateFromOffset(-1);
+const monthStart = `${today.slice(0, 7)}-01`;
+const [currentYear, currentMonth] = today.split("-").map(Number);
+const monthEnd = new Date(Date.UTC(currentYear, currentMonth, 0))
+  .toISOString()
+  .slice(0, 10);
 const weekday = new Date(`${today}T00:00:00Z`).getUTCDay();
 const currentMinutes = Number(now.hour) * 60 + Number(now.minute);
 const activeStart = Math.max(0, Math.min(24 * 60 - 61, currentMinutes - 30));
@@ -106,7 +121,7 @@ INSERT OR IGNORE INTO credit_transactions
   (id, account_id, kind, quantity, source_type, source_id, note, created_by_id)
 SELECT
   'credit_opening_' || student.id,
-  'credits_' || student.id,
+  account.id,
   'purchase',
   CASE student.id
     WHEN 'student_01' THEN 8
@@ -120,7 +135,9 @@ SELECT
   'Synthetic opening balance',
   'staff_admin_sofia'
 FROM students AS student
-WHERE student.id <> 'student_05';
+JOIN credit_accounts AS account ON account.student_id=student.id
+WHERE student.id <> 'student_05'
+  AND student.id GLOB 'student_[0-9][0-9]';
 
 INSERT OR IGNORE INTO class_series
   (id, name, subject, room, weekday, local_start_time, local_end_time, default_teacher_id, capacity, active)
@@ -130,13 +147,19 @@ VALUES
   ('series_y8_science', 'Year 8 Science', 'Science', 'Lab 1', ${weekday}, '${tertiary.start}', '${tertiary.end}', 'staff_teacher_mei', 12, 1),
   ('series_other_teacher', 'Year 7 Writing', 'English', 'Room 3', ${weekday}, '${active.start}', '${active.end}', 'staff_teacher_arjun', 10, 1);
 
-INSERT OR IGNORE INTO lesson_sessions
+INSERT INTO lesson_sessions
   (id, class_series_id, teacher_id, session_date, local_start_time, local_end_time, status)
-VALUES
-  ('${sessionIds.math}', 'series_y6_math', 'staff_teacher_mei', '${today}', '${active.start}', '${active.end}', 'scheduled'),
-  ('${sessionIds.english}', 'series_y5_english', 'staff_teacher_mei', '${today}', '${secondary.start}', '${secondary.end}', 'scheduled'),
-  ('${sessionIds.science}', 'series_y8_science', 'staff_teacher_mei', '${today}', '${tertiary.start}', '${tertiary.end}', 'scheduled'),
-  ('${sessionIds.other}', 'series_other_teacher', 'staff_teacher_arjun', '${today}', '${active.start}', '${active.end}', 'scheduled');
+SELECT '${sessionIds.math}', 'series_y6_math', 'staff_teacher_mei', '${today}', '${active.start}', '${active.end}', 'scheduled'
+WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='${sessionIds.math}')
+UNION ALL
+SELECT '${sessionIds.english}', 'series_y5_english', 'staff_teacher_mei', '${today}', '${secondary.start}', '${secondary.end}', 'scheduled'
+WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='${sessionIds.english}')
+UNION ALL
+SELECT '${sessionIds.science}', 'series_y8_science', 'staff_teacher_mei', '${today}', '${tertiary.start}', '${tertiary.end}', 'scheduled'
+WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='${sessionIds.science}')
+UNION ALL
+SELECT '${sessionIds.other}', 'series_other_teacher', 'staff_teacher_arjun', '${today}', '${active.start}', '${active.end}', 'scheduled'
+WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='${sessionIds.other}');
 
 INSERT OR IGNORE INTO enrollments
   (id, student_id, class_series_id, starts_on, status)
@@ -250,6 +273,248 @@ WHERE id IN (
   '${sessionIds.science}',
   '${sessionIds.other}'
 );
+
+INSERT OR IGNORE INTO organizations (id,name,timezone,status)
+VALUES ('org_austin','Austin Education','Australia/Melbourne','active');
+
+INSERT OR IGNORE INTO user_accounts
+  (id,organization_id,auth_user_id,email,display_name,status)
+VALUES
+  ('account_demo','org_austin','local_seedy','seedy@sites.test','Demo User','active'),
+  ('account_independent_manager','org_austin','demo_independent_manager',
+   'manager2@example.test','Independent Manager','active');
+
+INSERT OR IGNORE INTO account_role_assignments
+  (id,account_id,role,staff_user_id,student_id,guardian_id,scope_type,scope_id,active)
+VALUES
+  ('role_demo_teacher','account_demo','teacher','staff_teacher_mei',NULL,NULL,'self','staff_teacher_mei',1),
+  ('role_demo_operations','account_demo','operations_admin','staff_admin_sofia',NULL,NULL,'organization','org_austin',1),
+  ('role_demo_manager','account_demo','manager_admin','staff_manager_ava',NULL,NULL,'organization','org_austin',1),
+  ('role_demo_student','account_demo','student',NULL,'student_01',NULL,'self','student_01',1),
+  ('role_demo_guardian','account_demo','guardian',NULL,NULL,'guardian_01','self','guardian_01',1),
+  ('role_demo_system','account_demo','system_admin',NULL,NULL,NULL,'organization','org_austin',1),
+  ('role_independent_manager','account_independent_manager','manager_admin','staff_manager_ava',NULL,NULL,'organization','org_austin',1);
+
+INSERT OR IGNORE INTO organization_settings
+  (id,organization_id,setting_key,value_json,updated_by_id)
+VALUES
+  ('setting_attendance','org_austin','attendance.policy',
+   '{"presentBillable":true,"lateBillable":true,"absentBillable":false,"trialBillable":false}',
+   'staff_manager_ava'),
+  ('setting_locale','org_austin','organization.locale',
+   '{"language":"en-AU","timezone":"Australia/Melbourne","currency":"AUD"}',
+   'staff_manager_ava');
+
+INSERT OR IGNORE INTO programs
+  (id,organization_id,name,subject,default_session_minutes,active)
+VALUES
+  ('program_math','org_austin','Core Mathematics','Mathematics',60,1),
+  ('program_english','org_austin','English Foundations','English',60,1),
+  ('program_science','org_austin','Science Lab','Science',60,1);
+
+INSERT OR IGNORE INTO class_series_programs (class_series_id,program_id)
+VALUES
+  ('series_y6_math','program_math'),
+  ('series_y5_english','program_english'),
+  ('series_y8_science','program_science'),
+  ('series_other_teacher','program_english');
+
+INSERT OR IGNORE INTO rooms (id,organization_id,name,capacity,active)
+VALUES
+  ('room_2','org_austin','Room 2',12,1),
+  ('room_3','org_austin','Room 3',10,1),
+  ('room_4','org_austin','Room 4',10,1),
+  ('room_lab_1','org_austin','Lab 1',12,1),
+  ('room_5','org_austin','Room 5',8,1);
+
+UPDATE students SET lifecycle_status='prospect'
+WHERE id IN ('student_26','student_27','student_28','student_29','student_30');
+
+INSERT OR IGNORE INTO guardians (id,full_name,email,phone)
+VALUES
+  ('guardian_26','Taylor Demo','taylor26@example.test','0400 000 026'),
+  ('guardian_27','Jordan Demo','jordan27@example.test','0400 000 027'),
+  ('guardian_28','Casey Demo','casey28@example.test','0400 000 028');
+
+INSERT OR IGNORE INTO student_guardians
+  (student_id,guardian_id,relationship,is_primary)
+VALUES
+  ('student_26','guardian_26','guardian',1),
+  ('student_27','guardian_27','guardian',1),
+  ('student_28','guardian_28','guardian',1),
+  ('student_02','guardian_01','guardian',0);
+
+INSERT OR IGNORE INTO inquiries
+  (id,organization_id,student_id,guardian_id,owner_admin_id,source,status,notes,next_follow_up_at)
+VALUES
+  ('inquiry_new_26','org_austin','student_26','guardian_26','staff_admin_sofia',
+   'Website','new','Interested in mathematics',datetime('now','-2 hours')),
+  ('inquiry_trial_27','org_austin','student_27','guardian_27','staff_admin_sofia',
+   'Referral','trial_scheduled','Trial confirmed',datetime('now','+1 day')),
+  ('inquiry_completed_28','org_austin','student_28','guardian_28','staff_admin_sofia',
+   'Walk-in','trial_scheduled','Attendance completed; outcome still pending',CURRENT_TIMESTAMP);
+
+INSERT OR IGNORE INTO follow_up_tasks
+  (id,organization_id,student_id,inquiry_id,assignee_id,task_type,status,due_at)
+VALUES
+  ('followup_overdue_26','org_austin','student_26','inquiry_new_26','staff_admin_sofia',
+   'general','open',datetime('now','-2 hours')),
+  ('followup_trial_27','org_austin','student_27','inquiry_trial_27','staff_admin_sofia',
+   'trial_follow_up','open',datetime('now','+2 days'));
+
+INSERT OR IGNORE INTO class_series
+  (id,name,subject,room,weekday,local_start_time,local_end_time,session_kind,
+   default_teacher_id,capacity,active)
+VALUES
+  ('trial_series_seed','Trial · Mathematics','Mathematics','Room 5',
+   CAST(strftime('%w','${tomorrow}') AS INTEGER),'10:00','11:00','trial',
+   'staff_teacher_arjun',4,0),
+  ('trial_series_completed_seed','Trial · English','English','Room 5',
+   CAST(strftime('%w','${yesterday}') AS INTEGER),'12:00','13:00','trial',
+   'staff_teacher_arjun',4,0);
+
+INSERT INTO lesson_sessions
+  (id,class_series_id,teacher_id,session_date,local_start_time,local_end_time,
+   session_kind,status)
+SELECT 'trial_session_seed','trial_series_seed','staff_teacher_arjun','${tomorrow}',
+       '10:00','11:00','trial','scheduled'
+WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='trial_session_seed');
+
+INSERT INTO lesson_sessions
+  (id,class_series_id,teacher_id,session_date,local_start_time,local_end_time,
+   session_kind,status,roster_frozen_at)
+SELECT 'session_payroll_seed','series_y6_math','staff_teacher_mei','${yesterday}',
+       '10:00','11:00','regular','completed',CURRENT_TIMESTAMP
+WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='session_payroll_seed');
+
+INSERT INTO lesson_sessions
+  (id,class_series_id,teacher_id,session_date,local_start_time,local_end_time,
+   session_kind,status)
+SELECT 'trial_session_completed_seed','trial_series_completed_seed','staff_teacher_arjun',
+       '${yesterday}','12:00','13:00','trial','scheduled'
+WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='trial_session_completed_seed');
+
+INSERT OR IGNORE INTO session_participants
+  (id,lesson_session_id,student_id,credit_account_id,display_name,date_of_birth,
+   is_new,source,sort_order)
+SELECT 'participant_trial_seed','trial_session_seed',student.id,account.id,
+       COALESCE(student.preferred_name,student.legal_name),student.date_of_birth,
+       1,'trial',1
+FROM students student JOIN credit_accounts account ON account.student_id=student.id
+WHERE student.id='student_27';
+
+INSERT OR IGNORE INTO session_participants
+  (id,lesson_session_id,student_id,credit_account_id,display_name,date_of_birth,
+   is_new,source,sort_order)
+SELECT 'participant_trial_completed_seed','trial_session_completed_seed',student.id,account.id,
+       COALESCE(student.preferred_name,student.legal_name),student.date_of_birth,
+       1,'trial',1
+FROM students student JOIN credit_accounts account ON account.student_id=student.id
+WHERE student.id='student_28';
+
+UPDATE lesson_sessions SET roster_frozen_at=COALESCE(roster_frozen_at,CURRENT_TIMESTAMP)
+WHERE id='trial_session_completed_seed';
+
+INSERT INTO attendance
+  (id,lesson_session_id,student_id,status,billing_status,recorded_by_id)
+SELECT 'attendance_trial_completed_seed','trial_session_completed_seed','student_28',
+       'present','not_charged','staff_teacher_arjun'
+WHERE NOT EXISTS (
+  SELECT 1 FROM attendance WHERE id='attendance_trial_completed_seed'
+);
+
+UPDATE lesson_sessions
+SET status='completed',completed_at=COALESCE(completed_at,CURRENT_TIMESTAMP),
+    completed_by_id=COALESCE(completed_by_id,'staff_teacher_arjun')
+WHERE id='trial_session_completed_seed' AND status='scheduled';
+
+INSERT OR IGNORE INTO trial_bookings
+  (id,inquiry_id,lesson_session_id,outcome,conversion_decision)
+VALUES
+  ('trial_booking_seed','inquiry_trial_27','trial_session_seed','pending','pending'),
+  ('trial_booking_completed_seed','inquiry_completed_28','trial_session_completed_seed',
+   'pending','pending');
+
+UPDATE lesson_sessions SET roster_frozen_at=COALESCE(roster_frozen_at,CURRENT_TIMESTAMP)
+WHERE id='trial_session_seed';
+
+INSERT OR IGNORE INTO teacher_pay_rates
+  (id,teacher_id,session_kind,amount_cents,starts_on)
+VALUES
+  ('rate_mei_regular','staff_teacher_mei','regular',6500,'2026-01-01'),
+  ('rate_mei_trial','staff_teacher_mei','trial',4500,'2026-01-01'),
+  ('rate_arjun_regular','staff_teacher_arjun','regular',6200,'2026-01-01'),
+  ('rate_arjun_trial','staff_teacher_arjun','trial',4200,'2026-01-01');
+
+INSERT OR IGNORE INTO payroll_periods
+  (id,organization_id,starts_on,ends_on,status)
+VALUES ('payroll_current','org_austin','${monthStart}','${monthEnd}','open');
+
+INSERT OR IGNORE INTO payroll_entries
+  (id,payroll_period_id,lesson_session_id,teacher_id,session_kind,minutes,
+   base_amount_cents,adjustment_cents,status,note)
+VALUES
+  ('payroll_seed_entry','payroll_current','session_payroll_seed','staff_teacher_mei',
+   'regular',60,6500,0,'accrued','Seeded completed lesson'),
+  ('payroll_trial_seed_entry','payroll_current','trial_session_completed_seed',
+   'staff_teacher_arjun','trial',60,4200,0,'accrued','Seeded completed trial lesson');
+
+INSERT OR IGNORE INTO orders
+  (id,organization_id,student_id,created_by_account_id,order_type,status,
+   amount_cents,credit_quantity,currency,description,paid_at)
+VALUES
+  ('order_paid_seed','org_austin','student_01','account_demo','credit_top_up','paid',
+   36000,6,'AUD','Six lesson renewal package',CURRENT_TIMESTAMP),
+  ('order_pending_seed','org_austin','student_01','account_demo','credit_top_up','pending',
+   24000,4,'AUD','Four lesson renewal package',NULL);
+
+INSERT OR IGNORE INTO payment_transactions
+  (id,order_id,provider,provider_event_id,transaction_type,status,amount_cents,raw_reference)
+VALUES
+  ('payment_seed','order_paid_seed','sandbox','seed_payment_event','payment','succeeded',
+   36000,'Synthetic provider reference');
+
+INSERT OR IGNORE INTO credit_transactions
+  (id,account_id,kind,quantity,source_type,source_id,note,created_by_id)
+VALUES
+  ('credit_order_paid_seed','credits_student_01','purchase',6,'order','order_paid_seed',
+   'Paid lesson-credit order','staff_admin_sofia');
+
+INSERT OR IGNORE INTO refunds
+  (id,order_id,requested_by_id,status,amount_cents,reason)
+VALUES
+  ('refund_requested_seed','order_paid_seed','staff_admin_sofia','requested',36000,
+   'Guardian requested cancellation before using this package');
+
+INSERT OR IGNORE INTO messages
+  (id,organization_id,student_id,guardian_id,created_by_id,channel,subject,body,status,sent_at)
+VALUES
+  ('message_welcome_seed','org_austin','student_01','guardian_01','staff_admin_sofia',
+   'in_app','Welcome','Your next class and current balance are available in the portal.',
+   'sent',CURRENT_TIMESTAMP);
+
+INSERT OR IGNORE INTO integration_configs
+  (id,organization_id,integration_type,provider_name,mode,public_config_json,status,last_checked_at,updated_by_id)
+VALUES
+  ('integration_identity','org_austin','identity','ChatGPT Identity','live','{}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
+  ('integration_llm','org_austin','llm','OpenAI','sandbox','{"dataPolicy":"no-training"}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
+  ('integration_payment','org_austin','payment','SandboxPay','sandbox','{"currency":"AUD"}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
+  ('integration_bank','org_austin','bank','Bank export','sandbox','{}','unknown',CURRENT_TIMESTAMP,'staff_manager_ava'),
+  ('integration_email','org_austin','email','Mail sandbox','sandbox','{}','healthy',CURRENT_TIMESTAMP,'staff_manager_ava'),
+  ('integration_sms','org_austin','sms','SMS sandbox','sandbox','{}','degraded',CURRENT_TIMESTAMP,'staff_manager_ava'),
+  ('integration_wechat','org_austin','wechat','WeChat adapter','disabled','{}','unknown',CURRENT_TIMESTAMP,'staff_manager_ava');
+
+INSERT OR IGNORE INTO system_jobs
+  (id,organization_id,job_type,status,payload_json,attempts,requested_by_account_id,last_error)
+VALUES
+  ('job_failed_seed','org_austin','daily_balance_reminder','failed','{"dryRun":true}',3,
+   'account_demo','Sandbox SMS adapter unavailable');
+
+INSERT OR IGNORE INTO outbox_events
+  (id,organization_id,event_type,aggregate_type,aggregate_id,dedupe_key,payload_json,status)
+VALUES
+  ('outbox_pending_seed','org_austin','renewal.reminder','student','student_04',
+   'renewal.reminder:student_04:seed','{"studentId":"student_04"}','pending');
 `;
 
 mkdirSync(stateDirectory, { recursive: true });
@@ -269,7 +534,7 @@ try {
       "--config",
       "dist/server/wrangler.json",
       "--persist-to",
-      ".wrangler/state",
+      stateDirectory,
       "--file",
       seedFile,
     ],
@@ -283,5 +548,9 @@ try {
     `Demo data ready for ${today}. Mia has zero credits; Olivia is the only new student in the active class.`,
   );
 } finally {
-  unlinkSync(seedFile);
+  if (process.env.AUS_KEEP_SEED === "1") {
+    console.error(`Seed SQL kept for diagnostics: ${seedFile}`);
+  } else {
+    unlinkSync(seedFile);
+  }
 }

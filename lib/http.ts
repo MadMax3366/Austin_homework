@@ -1,4 +1,4 @@
-import { AppError } from "@/lib/domain";
+import { AppError } from "./domain.ts";
 import { ZodError } from "zod";
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
@@ -91,15 +91,33 @@ export async function readJson(request: Request): Promise<unknown> {
   }
 
   try {
-    return await request.json();
-  } catch {
+    const rawBody = await request.text();
+    if (new TextEncoder().encode(rawBody).byteLength > MAX_JSON_BODY_BYTES) {
+      throw new AppError(
+        413,
+        "REQUEST_TOO_LARGE",
+        "Request body must be 64 KB or smaller.",
+      );
+    }
+    return JSON.parse(rawBody) as unknown;
+  } catch (error) {
+    if (error instanceof AppError) throw error;
     throw new AppError(400, "MALFORMED_REQUEST", "Request body is not valid JSON.");
   }
 }
 
 export function assertSameOrigin(request: Request): void {
   const origin = request.headers.get("origin");
-  if (!origin) return;
+  if (!origin) {
+    if (request.headers.get("sec-fetch-site") === "cross-site") {
+      throw new AppError(
+        403,
+        "CROSS_ORIGIN_REQUEST_REJECTED",
+        "Cross-origin write requests are not allowed.",
+      );
+    }
+    return;
+  }
   let requestOrigin: string;
   try {
     requestOrigin = new URL(request.url).origin;

@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Teacher workspace · Austin Education",
-  description: "Attendance, class notes, and auditable lesson-credit management.",
+  title: "Student operations system · Austin Education",
+  description:
+    "Role-scoped admissions, scheduling, teaching, lesson-credit, finance, payroll, and platform operations.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

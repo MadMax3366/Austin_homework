@@ -18,10 +18,13 @@ type SessionGuardRow = {
   version: number;
   sessionDate: string;
   startTime: string;
+  endTime: string;
+  sessionKind: "regular" | "trial" | "makeup" | "private";
   rosterFrozenAt: string | null;
 };
 
 type CompletionClaimRow = {
+  lessonSessionId?: string;
   actorId: string;
   idempotencyKey: string;
   requestHash: string;
@@ -31,6 +34,7 @@ type CompletionClaimRow = {
 type RosterAccountRow = {
   studentId: string;
   accountId: string;
+  source: "enrollment" | "trial" | "makeup" | "manual";
 };
 
 async function sha256(value: string): Promise<string> {
@@ -43,10 +47,14 @@ async function sha256(value: string): Promise<string> {
     .join("");
 }
 
-async function completionHash(input: CompleteClassInput): Promise<string> {
+async function completionHash(
+  sessionId: string,
+  input: CompleteClassInput,
+): Promise<string> {
   const canonical = {
     schemaVersion: 1,
     operation: "complete_class",
+    sessionId,
     expectedVersion: input.expectedVersion,
     records: [...input.records].sort((a, b) =>
       a.studentId.localeCompare(b.studentId),
@@ -144,7 +152,7 @@ export async function completeClass(
   }
 
   const db = getD1();
-  const hash = await completionHash(input);
+  const hash = await completionHash(sessionId, input);
   const session = await db
     .prepare(
       `SELECT
@@ -154,6 +162,8 @@ export async function completeClass(
         version,
         session_date AS sessionDate,
         local_start_time AS startTime,
+        local_end_time AS endTime,
+        session_kind AS sessionKind,
         roster_frozen_at AS rosterFrozenAt
        FROM lesson_sessions
        WHERE id = ?
@@ -170,6 +180,25 @@ export async function completeClass(
       403,
       "SESSION_ACCESS_DENIED",
       "You are not assigned to this class session.",
+    );
+  }
+
+  const priorKeyClaim = await db
+    .prepare(
+      `SELECT lesson_session_id AS lessonSessionId,
+              actor_id AS actorId,idempotency_key AS idempotencyKey,
+              request_hash AS requestHash,state
+       FROM session_completion_claims
+       WHERE actor_id=? AND operation='complete_class' AND idempotency_key=?
+       LIMIT 1`,
+    )
+    .bind(staff.id, idempotencyKey)
+    .first<CompletionClaimRow>();
+  if (priorKeyClaim && priorKeyClaim.lessonSessionId !== sessionId) {
+    throw new AppError(
+      409,
+      "IDEMPOTENCY_KEY_REUSED",
+      "This idempotency key was already used for another class session.",
     );
   }
 
@@ -267,7 +296,8 @@ export async function completeClass(
     .prepare(
       `SELECT
         participant.student_id AS studentId,
-        participant.credit_account_id AS accountId
+        participant.credit_account_id AS accountId,
+        participant.source
        FROM session_participants AS participant
        WHERE participant.lesson_session_id = ?
         AND participant.removed_at IS NULL
@@ -325,7 +355,10 @@ export async function completeClass(
     const record = submitted.get(row.studentId);
     if (!record) continue;
     const attendanceId = `attendance_${sessionId}_${row.studentId}`;
-    const billable = isBillable(record.status);
+    const billable =
+      row.source !== "trial" &&
+      session.sessionKind !== "trial" &&
+      isBillable(record.status);
 
     statements.push(
       db
@@ -394,6 +427,61 @@ export async function completeClass(
           ),
       );
     }
+  }
+
+  const [payRate, payrollPeriod, organization] = await Promise.all([
+    db.prepare(
+      `SELECT amount_cents AS amountCents
+       FROM teacher_pay_rates
+       WHERE teacher_id=? AND session_kind=? AND starts_on<=?
+         AND (ends_on IS NULL OR ends_on>=?)
+       ORDER BY starts_on DESC LIMIT 1`,
+    ).bind(staff.id, session.sessionKind, session.sessionDate, session.sessionDate)
+      .first<{ amountCents: number }>(),
+    db.prepare(
+      `SELECT id FROM payroll_periods
+       WHERE starts_on<=? AND ends_on>=? AND status='open'
+       ORDER BY starts_on DESC LIMIT 1`,
+    ).bind(session.sessionDate, session.sessionDate).first<{ id: string }>(),
+    db.prepare(
+      `SELECT id FROM organizations WHERE status='active' ORDER BY created_at LIMIT 1`,
+    ).first<{ id: string }>(),
+  ]);
+
+  const [startHour, startMinute] = session.startTime.split(":").map(Number);
+  const [endHour, endMinute] = session.endTime.split(":").map(Number);
+  const minutes = endHour * 60 + endMinute - (startHour * 60 + startMinute);
+  statements.push(
+    db.prepare(
+      `INSERT INTO payroll_entries
+        (id,payroll_period_id,lesson_session_id,teacher_id,session_kind,minutes,
+         base_amount_cents,status,note)
+       VALUES (?,?,?,?,?,?,?,'accrued',?)`,
+    ).bind(
+      `payroll_${sessionId}`,
+      payrollPeriod?.id ?? null,
+      sessionId,
+      staff.id,
+      session.sessionKind,
+      minutes,
+      Number(payRate?.amountCents ?? 0),
+      payRate ? null : "Pay rate missing; manager review required",
+    ),
+  );
+  if (organization) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO outbox_events
+          (id,organization_id,event_type,aggregate_type,aggregate_id,dedupe_key,payload_json)
+         VALUES (?,?,'class.completed','lesson_session',?,?,?)`,
+      ).bind(
+        `outbox_class_${sessionId}`,
+        organization.id,
+        sessionId,
+        `class.completed:${sessionId}`,
+        JSON.stringify({ sessionId, teacherId: staff.id }),
+      ),
+    );
   }
 
   statements.push(
@@ -467,6 +555,23 @@ export async function completeClass(
       racedClaim.state === "completed"
     ) {
       return readStableResult(staff, sessionId, true);
+    }
+
+    const racedKey = await db
+      .prepare(
+        `SELECT lesson_session_id AS lessonSessionId
+         FROM session_completion_claims
+         WHERE actor_id=? AND operation='complete_class' AND idempotency_key=?
+         LIMIT 1`,
+      )
+      .bind(staff.id, idempotencyKey)
+      .first<{ lessonSessionId: string }>();
+    if (racedKey && racedKey.lessonSessionId !== sessionId) {
+      throw new AppError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "This idempotency key was already used for another class session.",
+      );
     }
 
     const message = databaseMessage(error);
