@@ -88,3 +88,21 @@ export type ApiErrorBody = {
     details: unknown;
   };
 };
+
+export type FaqTriageResult = {
+  status: "answered" | "escalated";
+  category:
+    | "schedule"
+    | "trial"
+    | "credits"
+    | "attendance"
+    | "feedback"
+    | "payment"
+    | "account"
+    | "other";
+  source: "ai" | "fallback" | "policy";
+  answer: string | null;
+  faqId: string | null;
+  ticketId: string | null;
+  message: string;
+};

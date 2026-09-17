@@ -74,6 +74,7 @@ VALUES
   ('staff_teacher_mei', 'local_seedy', 'seedy@sites.test', 'Mei Lin', 'teacher', 1),
   ('staff_teacher_arjun', 'demo_teacher_arjun', 'arjun@example.test', 'Arjun Patel', 'teacher', 1),
   ('staff_admin_sofia', 'demo_admin_sofia', 'sofia@example.test', 'Sofia Nguyen', 'admin', 1),
+  ('staff_admin_liam', 'demo_admin_liam', 'liam@example.test', 'Liam Wilson', 'admin', 1),
   ('staff_manager_ava', 'demo_manager_ava', 'ava@example.test', 'Ava Thompson', 'manager', 1);
 
 INSERT OR IGNORE INTO students
@@ -288,7 +289,7 @@ INSERT OR IGNORE INTO account_role_assignments
   (id,account_id,role,staff_user_id,student_id,guardian_id,scope_type,scope_id,active)
 VALUES
   ('role_demo_teacher','account_demo','teacher','staff_teacher_mei',NULL,NULL,'self','staff_teacher_mei',1),
-  ('role_demo_operations','account_demo','operations_admin','staff_admin_sofia',NULL,NULL,'organization','org_austin',1),
+  ('role_demo_operations','account_demo','operations_admin','staff_admin_sofia',NULL,NULL,'owner','staff_admin_sofia',1),
   ('role_demo_manager','account_demo','manager_admin','staff_manager_ava',NULL,NULL,'organization','org_austin',1),
   ('role_demo_student','account_demo','student',NULL,'student_01',NULL,'self','student_01',1),
   ('role_demo_guardian','account_demo','guardian',NULL,NULL,'guardian_01','self','guardian_01',1),
@@ -303,6 +304,9 @@ VALUES
    'staff_manager_ava'),
   ('setting_locale','org_austin','organization.locale',
    '{"language":"en-AU","timezone":"Australia/Melbourne","currency":"AUD"}',
+   'staff_manager_ava'),
+  ('setting_renewal','org_austin','renewal.threshold',
+   '{"credits":3}',
    'staff_manager_ava');
 
 INSERT OR IGNORE INTO programs
@@ -329,6 +333,9 @@ VALUES
 
 UPDATE students SET lifecycle_status='prospect'
 WHERE id IN ('student_26','student_27','student_28','student_29','student_30');
+
+UPDATE students SET owner_admin_id='staff_admin_liam'
+WHERE id='student_30';
 
 INSERT OR IGNORE INTO guardians (id,full_name,email,phone)
 VALUES

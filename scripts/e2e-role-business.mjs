@@ -110,6 +110,13 @@ for (const role of ["operations_admin", "manager_admin", "student", "guardian", 
   const overview = await call(`${role} overview`, `/api/platform/overview?role=${role}`);
   assert.equal(overview.role, role);
   assert.ok(Array.isArray(overview.sections));
+  if (role === "operations_admin") {
+    const trialAttention = overview.sections.find((section) => section.id === "trial-attention");
+    const lowBalances = overview.sections.find((section) => section.id === "low-balances");
+    assert.ok(trialAttention?.rows.length >= 1, "Admin needs an explicit completed-trial attention queue");
+    assert.ok(lowBalances?.rows.length >= 1, "Admin needs an explicit low-credit queue");
+    assert.ok(lowBalances.rows.every((row) => Number(row.credits) <= 3));
+  }
 }
 
 for (const role of ["teacher", "operations_admin", "manager_admin", "student", "guardian", "system_admin"]) {
@@ -274,6 +281,20 @@ await command("Operations completes follow-up", "operations_admin", {
   taskId: "followup_overdue_26",
   note: "Guardian contacted successfully",
 });
+await command("Operations prepares renewal for owned low-credit student", "operations_admin", {
+  action: "create_order",
+  studentId: "student_04",
+  creditQuantity: 8,
+  amountCents: 48000,
+  description: "Eight lesson renewal prepared by operations",
+});
+await command("Operations cannot modify another owner's student", "operations_admin", {
+  action: "create_order",
+  studentId: "student_30",
+  creditQuantity: 8,
+  amountCents: 48000,
+  description: "Forbidden cross-owner renewal",
+}, 403);
 
 const studentOrder = await command("Student creates own renewal", "student", {
   action: "create_order",
@@ -340,6 +361,24 @@ await command("Guardian pays linked child order", "guardian", {
   action: "sandbox_pay_order",
   orderId: guardianOrder.entityId,
   providerEventId: "e2e_guardian_payment_20260917",
+});
+
+const faqAnswer = await call("FAQ answers an approved basic question", "/api/faq/triage?role=student", {
+  method: "POST",
+  body: { question: "正式课出勤以后，课时怎么扣？", studentId: "student_01" },
+});
+assert.equal(faqAnswer.status, "answered");
+assert.equal(faqAnswer.faqId, "faq_credit_charge");
+const faqHandoff = await call("FAQ routes a refund dispute to the human owner", "/api/faq/triage?role=student", {
+  method: "POST",
+  body: { question: "我的余额不对，我想申请退费", studentId: "student_01" },
+});
+assert.equal(faqHandoff.status, "escalated");
+assert.ok(faqHandoff.ticketId);
+await call("Guardian FAQ cannot target an unrelated child", "/api/faq/triage?role=guardian", {
+  method: "POST",
+  body: { question: "课时怎么扣？", studentId: "student_03" },
+  expected: 403,
 });
 
 const refund = await command("Operations requests full unused-credit refund", "operations_admin", {
@@ -429,7 +468,13 @@ const emptyOutbox = await command("Outbox worker replay is safe", "system_admin"
 assert.equal(emptyOutbox.details.processed, 0);
 
 for (const role of ["operations_admin", "manager_admin", "student", "guardian", "system_admin"]) {
-  await call(`${role} overview remains healthy after mutations`, `/api/platform/overview?role=${role}`);
+  const overview = await call(`${role} overview remains healthy after mutations`, `/api/platform/overview?role=${role}`);
+  if (role === "operations_admin") {
+    const tasks = overview.sections.find((section) => section.id === "tasks")?.rows ?? [];
+    const handoffTask = tasks.find((row) => row.id === faqHandoff.ticketId);
+    assert.ok(handoffTask, "FAQ handoff must reach the owner task queue");
+    assert.match(String(handoffTask.question), /退费/);
+  }
 }
 await call("Teacher workspace remains healthy after mutations", "/api/workspace");
 

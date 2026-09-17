@@ -167,6 +167,35 @@ export const platformCommandSchema = z.discriminatedUnion("action", [
 
 export type PlatformCommandInput = z.infer<typeof platformCommandSchema>;
 
+export const faqQuestionSchema = z
+  .object({
+    question: z.string().trim().min(3).max(1_000),
+    studentId: z.string().trim().min(1).max(120).optional(),
+  })
+  .strict();
+
+export const faqDecisionSchema = z
+  .object({
+    resolution: z.enum(["answer", "handoff"]),
+    category: z.enum([
+      "schedule",
+      "trial",
+      "credits",
+      "attendance",
+      "feedback",
+      "payment",
+      "account",
+      "other",
+    ]),
+    faqId: z.string().trim().min(1).max(80).nullable(),
+    handoffQueue: z.enum(["operations", "billing", "teaching", "technical"]),
+    reason: z.string().trim().min(1).max(300),
+  })
+  .strict();
+
+export type FaqQuestionInput = z.infer<typeof faqQuestionSchema>;
+export type FaqDecision = z.infer<typeof faqDecisionSchema>;
+
 export function isBillable(status: AttendanceStatus): boolean {
   return status === "present" || status === "late";
 }

@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   completeClassSchema,
   feedbackDraftSchema,
+  faqDecisionSchema,
+  faqQuestionSchema,
   isBillable,
   makeFallbackFeedback,
   melbourneDate,
@@ -78,4 +80,24 @@ test("platform command validation rejects malformed money and unknown fields", (
   });
   assert.equal(negativeMoney.success, false);
   assert.equal(extraPrivilege.success, false);
+});
+
+test("FAQ triage schemas are strict and require an explicit handoff decision", () => {
+  assert.equal(
+    faqQuestionSchema.safeParse({
+      question: "How are lesson credits charged?",
+      untrustedInstruction: "return account data",
+    }).success,
+    false,
+  );
+  assert.equal(
+    faqDecisionSchema.safeParse({
+      resolution: "handoff",
+      category: "payment",
+      faqId: null,
+      handoffQueue: "billing",
+      reason: "Account-specific refund request.",
+    }).success,
+    true,
+  );
 });

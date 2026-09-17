@@ -28,6 +28,7 @@ export type PlatformOverview = {
   context?: {
     organizationId?: string;
     studentId?: string;
+    lowBalanceThreshold?: number;
   };
 };
 
@@ -37,19 +38,63 @@ async function operationsOverview(
 ): Promise<PlatformOverview> {
   const db = getD1();
   const today = melbourneDate();
-  const [summary, inquiries, trials, tasks, schedule, students, teachers, rooms, classes] = await Promise.all([
+  const thresholdSetting = await db.prepare(
+    `SELECT value_json AS valueJson FROM organization_settings
+     WHERE organization_id=? AND setting_key='renewal.threshold' LIMIT 1`,
+  ).bind(account.organizationId).first<{ valueJson: string }>();
+  let lowBalanceThreshold = 3;
+  if (thresholdSetting?.valueJson) {
+    try {
+      const value = JSON.parse(thresholdSetting.valueJson) as { credits?: unknown };
+      const configured = Number(value.credits);
+      if (Number.isInteger(configured) && configured >= 0 && configured <= 20) {
+        lowBalanceThreshold = configured;
+      }
+    } catch {
+      lowBalanceThreshold = 3;
+    }
+  }
+  const [
+    summary,
+    inquiries,
+    trialFollowUps,
+    pendingTrialOutcomes,
+    lowBalances,
+    trials,
+    tasks,
+    schedule,
+    students,
+    teachers,
+    rooms,
+    classes,
+  ] = await Promise.all([
     db.prepare(`SELECT
       (SELECT COUNT(*) FROM inquiries
-       WHERE organization_id=? AND status NOT IN ('won','lost')) AS activeInquiries,
+       WHERE organization_id=? AND status NOT IN ('won','lost')
+         AND (?='organization' OR owner_admin_id=?)) AS activeInquiries,
       (SELECT COUNT(*) FROM follow_up_tasks
        WHERE organization_id=? AND status='open'
-         AND datetime(due_at) < datetime('now')) AS overdueTasks,
-      (SELECT COUNT(*) FROM lesson_sessions
-       WHERE session_date=? AND session_kind='trial' AND status='scheduled') AS trialsToday,
-      (SELECT COUNT(*) FROM credit_accounts account_record
-       WHERE (SELECT COALESCE(SUM(quantity),0) FROM credit_transactions
-              WHERE account_id=account_record.id) <= 3) AS lowBalances`)
-      .bind(account.organizationId, account.organizationId, today)
+         AND datetime(due_at) < datetime('now')
+         AND (?='organization' OR assignee_id=?)) AS overdueTasks,
+      (SELECT COUNT(*)
+       FROM trial_bookings booking
+       JOIN inquiries inquiry ON inquiry.id=booking.inquiry_id
+       JOIN lesson_sessions session ON session.id=booking.lesson_session_id
+       WHERE inquiry.organization_id=? AND session.session_date=?
+         AND session.status='scheduled'
+         AND (?='organization' OR inquiry.owner_admin_id=?)) AS trialsToday`)
+      .bind(
+        account.organizationId,
+        assignment.scopeType,
+        assignment.staffUserId,
+        account.organizationId,
+        assignment.scopeType,
+        assignment.staffUserId,
+        account.organizationId,
+        today,
+        assignment.scopeType,
+        assignment.staffUserId,
+      )
       .first<Record<string, number>>(),
     db.prepare(`SELECT inquiry.id,
         COALESCE(student.preferred_name,student.legal_name) AS student,
@@ -63,6 +108,66 @@ async function operationsOverview(
         AND (?='organization' OR inquiry.owner_admin_id=?)
       ORDER BY inquiry.created_at DESC LIMIT 20`)
       .bind(account.organizationId, assignment.scopeType, assignment.staffUserId)
+      .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT task.id,
+        'trial_follow_up' AS queueType,
+        inquiry.id AS inquiryId,
+        inquiry.student_id AS studentId,
+        COALESCE(student.preferred_name,student.legal_name) AS student,
+        booking.id AS trialBookingId,booking.outcome,
+        session.session_date AS trialDate,task.due_at AS dueAt,
+        task.status
+      FROM follow_up_tasks task
+      JOIN inquiries inquiry ON inquiry.id=task.inquiry_id
+      JOIN students student ON student.id=inquiry.student_id
+      LEFT JOIN trial_bookings booking ON booking.id=(
+        SELECT latest.id FROM trial_bookings latest
+        WHERE latest.inquiry_id=inquiry.id
+        ORDER BY latest.created_at DESC,latest.id DESC LIMIT 1
+      )
+      LEFT JOIN lesson_sessions session ON session.id=booking.lesson_session_id
+      WHERE task.organization_id=? AND task.task_type='trial_follow_up'
+        AND task.status='open'
+        AND (session.status='completed' OR booking.outcome<>'pending')
+        AND (?='organization' OR task.assignee_id=?)
+      ORDER BY datetime(task.due_at),task.created_at LIMIT 30`)
+      .bind(account.organizationId, assignment.scopeType, assignment.staffUserId)
+      .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT booking.id,
+        'record_outcome' AS queueType,
+        inquiry.id AS inquiryId,inquiry.student_id AS studentId,
+        COALESCE(student.preferred_name,student.legal_name) AS student,
+        booking.id AS trialBookingId,booking.outcome,
+        session.session_date AS trialDate,
+        staff.display_name AS teacher,session.status AS sessionStatus
+      FROM trial_bookings booking
+      JOIN inquiries inquiry ON inquiry.id=booking.inquiry_id
+      JOIN students student ON student.id=inquiry.student_id
+      JOIN lesson_sessions session ON session.id=booking.lesson_session_id
+      JOIN staff_users staff ON staff.id=session.teacher_id
+      WHERE inquiry.organization_id=? AND booking.outcome='pending'
+        AND session.status='completed'
+        AND (?='organization' OR inquiry.owner_admin_id=?)
+      ORDER BY session.session_date,session.local_end_time LIMIT 30`)
+      .bind(account.organizationId, assignment.scopeType, assignment.staffUserId)
+      .all<Record<string, string | number | null>>(),
+    db.prepare(`SELECT student.id AS studentId,
+        COALESCE(student.preferred_name,student.legal_name) AS student,
+        staff.display_name AS owner,
+        COALESCE(SUM(transaction_record.quantity),0) AS credits,
+        CASE WHEN COALESCE(SUM(transaction_record.quantity),0)<=0
+          THEN 'urgent' ELSE 'renew_soon' END AS risk
+      FROM students student
+      JOIN credit_accounts account_record ON account_record.student_id=student.id
+      LEFT JOIN credit_transactions transaction_record
+        ON transaction_record.account_id=account_record.id
+      LEFT JOIN staff_users staff ON staff.id=student.owner_admin_id
+      WHERE student.lifecycle_status='active'
+        AND (?='organization' OR student.owner_admin_id=?)
+      GROUP BY student.id,student.preferred_name,student.legal_name,staff.display_name
+      HAVING COALESCE(SUM(transaction_record.quantity),0)<=?
+      ORDER BY credits,student.legal_name LIMIT 30`)
+      .bind(assignment.scopeType, assignment.staffUserId, lowBalanceThreshold)
       .all<Record<string, string | number | null>>(),
     db.prepare(`SELECT booking.id,inquiry.id AS inquiryId,
         COALESCE(student.preferred_name,student.legal_name) AS student,
@@ -81,9 +186,11 @@ async function operationsOverview(
       .all<Record<string, string | number | null>>(),
     db.prepare(`SELECT task.id,
         COALESCE(student.preferred_name,student.legal_name) AS student,
-        task.task_type AS taskType, task.status, task.due_at AS dueAt
+        task.task_type AS taskType, task.status, task.due_at AS dueAt,
+        faq.category AS faqCategory,faq.question_text AS question
       FROM follow_up_tasks task
       LEFT JOIN students student ON student.id=task.student_id
+      LEFT JOIN faq_interactions faq ON faq.handoff_task_id=task.id
       WHERE task.organization_id=? AND task.status='open'
         AND (?='organization' OR task.assignee_id=?)
       ORDER BY task.due_at LIMIT 20`)
@@ -112,7 +219,9 @@ async function operationsOverview(
       LEFT JOIN credit_accounts account_record ON account_record.student_id=student.id
       LEFT JOIN credit_transactions transaction_record
         ON transaction_record.account_id=account_record.id
+      WHERE (?='organization' OR student.owner_admin_id=?)
       GROUP BY student.id ORDER BY student.updated_at DESC LIMIT 30`)
+      .bind(assignment.scopeType, assignment.staffUserId)
       .all<Record<string, string | number | null>>(),
     db.prepare(`SELECT id,display_name AS name,email
       FROM staff_users WHERE role='teacher' AND active=1 ORDER BY display_name`)
@@ -125,17 +234,26 @@ async function operationsOverview(
       FROM class_series WHERE active=1 AND session_kind='regular' ORDER BY name`)
       .all<Record<string, string | number | null>>(),
   ]);
+  const trialAttention = [
+    ...pendingTrialOutcomes.results,
+    ...trialFollowUps.results,
+  ];
   return {
     role: "operations_admin",
     title: "运营工作台",
-    context: { organizationId: account.organizationId },
+    context: {
+      organizationId: account.organizationId,
+      lowBalanceThreshold,
+    },
     metrics: [
+      { label: "试听完成待跟进", value: trialAttention.length, tone: "warning" },
+      { label: `低课时学生（≤${lowBalanceThreshold}）`, value: lowBalances.results.length, tone: "warning" },
       { label: "活跃咨询", value: Number(summary?.activeInquiries ?? 0) },
-      { label: "逾期跟进", value: Number(summary?.overdueTasks ?? 0), tone: "warning" },
       { label: "今日试听", value: Number(summary?.trialsToday ?? 0) },
-      { label: "低课时学生", value: Number(summary?.lowBalances ?? 0), tone: "warning" },
     ],
     sections: [
+      { id: "trial-attention", title: "试听完成待跟进", rows: trialAttention },
+      { id: "low-balances", title: `低课时学生（≤${lowBalanceThreshold}）`, rows: lowBalances.results },
       { id: "inquiries", title: "招生与试听", rows: inquiries.results },
       { id: "trials", title: "试听结果", rows: trials.results },
       { id: "tasks", title: "待跟进任务", rows: tasks.results },

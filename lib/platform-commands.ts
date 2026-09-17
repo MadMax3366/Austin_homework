@@ -71,6 +71,24 @@ async function assertStudentAccess(
   context: CommandContext,
   studentId: string,
 ): Promise<void> {
+  if (
+    context.role === "operations_admin" &&
+    context.assignment.scopeType === "owner"
+  ) {
+    const owned = context.assignment.staffUserId
+      ? await getD1().prepare(
+          `SELECT 1 AS allowed FROM students
+           WHERE id=? AND owner_admin_id=? LIMIT 1`,
+        ).bind(studentId, context.assignment.staffUserId).first<{ allowed: number }>()
+      : null;
+    if (!owned) {
+      throw new AppError(
+        403,
+        "STUDENT_SCOPE_FORBIDDEN",
+        "This student belongs to another operator.",
+      );
+    }
+  }
   if (context.role === "student" && context.assignment.studentId !== studentId) {
     throw new AppError(
       403,
@@ -684,6 +702,7 @@ async function requestRefund(
      FROM orders WHERE id=? LIMIT 1`,
   ).bind(input.orderId).first<OrderRow>();
   if (!order) throw new AppError(404, "ORDER_NOT_FOUND", "Order not found.");
+  await assertStudentAccess(context, order.studentId);
   if (order.status !== "paid") {
     throw new AppError(409, "ORDER_NOT_REFUNDABLE", "Only a paid, unrefunded order can be refunded.");
   }

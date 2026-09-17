@@ -8,6 +8,7 @@ import {
   BookOpen,
   CheckCircle2,
   LogOut,
+  MessageCircleQuestion,
   Play,
   RefreshCw,
   Send,
@@ -44,6 +45,7 @@ import type { PlatformRole } from "@/lib/account-auth";
 import type { PlatformCommandInput } from "@/lib/domain";
 import type { PlatformCommandResult } from "@/lib/platform-commands";
 import type { PlatformOverview } from "@/lib/platform-overview";
+import type { FaqTriageResult } from "@/lib/types";
 
 type Viewer = { displayName: string; email: string; signOutPath: string };
 type Row = Record<string, string | number | null>;
@@ -106,6 +108,23 @@ function displayValue(key: string, value: string | number | null): React.ReactNo
   if (key === "status" || key === "kind" || key === "type" || key === "mode") {
     return <Badge variant="outline" className="font-normal">{String(value).replaceAll("_", " ")}</Badge>;
   }
+  if (/At$/.test(key) && typeof value === "string") {
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+      ? `${value.replace(" ", "T")}Z`
+      : value;
+    const date = new Date(normalized);
+    if (!Number.isNaN(date.getTime())) {
+      return (
+        <span title={`${value} · stored UTC`} className="text-nowrap">
+          {new Intl.DateTimeFormat("en-AU", {
+            timeZone: "Australia/Melbourne",
+            dateStyle: "medium",
+            timeStyle: "short",
+          }).format(date)}
+        </span>
+      );
+    }
+  }
   const text = String(value);
   return <span title={text} className="block max-w-72 truncate">{text}</span>;
 }
@@ -161,6 +180,8 @@ function OperationsActions({ data, run, busy }: {
 }) {
   const inquiryRows = data.sections.find((section) => section.id === "inquiries")?.rows ?? [];
   const trialRows = data.sections.find((section) => section.id === "trials")?.rows ?? [];
+  const trialAttentionRows = data.sections.find((section) => section.id === "trial-attention")?.rows ?? [];
+  const lowBalanceRows = data.sections.find((section) => section.id === "low-balances")?.rows ?? [];
   const taskRows = data.sections.find((section) => section.id === "tasks")?.rows ?? [];
   const resources = data.sections.find((section) => section.id === "resources")?.rows ?? [];
   const teacher = resources.find((row) => row.type === "teacher");
@@ -180,6 +201,9 @@ function OperationsActions({ data, run, busy }: {
   const [trialBookingId, setTrialBookingId] = useState(String(trialRows.find((row) => row.outcome === "pending" && row.sessionStatus === "completed")?.id ?? trialRows[0]?.id ?? ""));
   const [conversionInquiryId, setConversionInquiryId] = useState(String(inquiryRows.find((row) => row.status === "trial_completed")?.id ?? ""));
   const [classSeriesId, setClassSeriesId] = useState(String(targetClass?.id ?? ""));
+  const [renewalStudentId, setRenewalStudentId] = useState(String(lowBalanceRows[0]?.studentId ?? ""));
+  const [renewalCredits, setRenewalCredits] = useState("8");
+  const [renewalAmount, setRenewalAmount] = useState("480");
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -189,8 +213,16 @@ function OperationsActions({ data, run, busy }: {
       await run({ action: "schedule_trial", inquiryId, teacherId, room: roomName, date: trialDate, startTime: "12:00", endTime: "13:00" });
     } else if (mode === "outcome") {
       await run({ action: "record_trial_outcome", trialBookingId, outcome: "attended", decision: "enrol", notes: "Trial attended; family would like to enrol" });
-    } else {
+    } else if (mode === "convert") {
       await run({ action: "convert_inquiry", inquiryId: conversionInquiryId, classSeriesId, creditQuantity: 8, amountCents: 48000 });
+    } else {
+      await run({
+        action: "create_order",
+        studentId: renewalStudentId,
+        creditQuantity: Number(renewalCredits),
+        amountCents: Math.round(Number(renewalAmount) * 100),
+        description: `${renewalCredits} lesson renewal prepared by operations`,
+      });
     }
   };
   return (
@@ -205,6 +237,7 @@ function OperationsActions({ data, run, busy }: {
           <Button type="button" variant={mode === "trial" ? "default" : "ghost"} size="sm" onClick={() => setMode("trial")}>排试听</Button>
           <Button type="button" variant={mode === "outcome" ? "default" : "ghost"} size="sm" onClick={() => setMode("outcome")}>试听结果</Button>
           <Button type="button" variant={mode === "convert" ? "default" : "ghost"} size="sm" onClick={() => setMode("convert")}>转正式</Button>
+          <Button type="button" variant={mode === "renewal" ? "default" : "ghost"} size="sm" className="col-span-2" onClick={() => setMode("renewal")}>低课时续费</Button>
         </div>
         <form className="space-y-4" onSubmit={submit}>
           {mode === "create" ? (
@@ -228,26 +261,36 @@ function OperationsActions({ data, run, busy }: {
               <Field label="试听 Booking ID" value={trialBookingId} onChange={setTrialBookingId} />
               <p className="text-xs leading-5 text-muted-foreground">出勤必须先由老师完成；这里记录招生结论，不代替课堂点名。</p>
             </>
-          ) : (
+          ) : mode === "convert" ? (
             <>
               <Field label="已完成试听的咨询 ID" value={conversionInquiryId} onChange={setConversionInquiryId} />
               <Field label="目标班级 ID" value={classSeriesId} onChange={setClassSeriesId} />
               <p className="text-xs leading-5 text-muted-foreground">转化会原子创建报名和首期待付订单。</p>
             </>
+          ) : (
+            <>
+              <Field label="低课时学生 ID" value={renewalStudentId} onChange={setRenewalStudentId} />
+              <Field label="续费课时" value={renewalCredits} onChange={setRenewalCredits} type="number" />
+              <Field label="金额（AUD）" value={renewalAmount} onChange={setRenewalAmount} type="number" />
+              <p className="text-xs leading-5 text-muted-foreground">运营只代建待支付订单，不会替家长自动扣款。</p>
+            </>
           )}
           <Button className="w-full" disabled={busy} type="submit">
             {busy ? <RefreshCw className="animate-spin" /> : <Play />}
-            {mode === "create" ? "创建咨询与跟进" : mode === "trial" ? "校验冲突并排课" : mode === "outcome" ? "记录试听结果" : "转化并创建订单"}
+            {mode === "create" ? "创建咨询与跟进" : mode === "trial" ? "校验冲突并排课" : mode === "outcome" ? "记录试听结果" : mode === "convert" ? "转化并创建订单" : "创建待支付续费订单"}
           </Button>
         </form>
-        {taskRows[0] ? (
+        {trialAttentionRows.find((row) => row.queueType === "trial_follow_up") || taskRows[0] ? (
           <Button
             variant="outline"
             className="w-full"
             disabled={busy}
-            onClick={() => run({ action: "complete_follow_up", taskId: String(taskRows[0].id), note: "Contact completed from operations workspace" })}
+            onClick={() => {
+              const task = trialAttentionRows.find((row) => row.queueType === "trial_follow_up") ?? taskRows[0];
+              if (task) void run({ action: "complete_follow_up", taskId: String(task.id), note: "Trial follow-up completed from operations action centre" });
+            }}
           >
-            <CheckCircle2 />完成最早跟进任务
+            <CheckCircle2 />完成最早试听跟进
           </Button>
         ) : null}
       </CardContent>
@@ -282,29 +325,95 @@ function ManagerActions({ data, run, busy }: {
   );
 }
 
-function PortalActions({ data, run, busy }: {
+function PortalActions({ data, run, busy, role }: {
   data: PlatformOverview;
   run: (command: PlatformCommandInput) => Promise<void>;
   busy: boolean;
+  role: "student" | "guardian";
 }) {
   const studentId = data.context?.studentId ?? "";
   const pending = data.sections.find((section) => section.id === "credits")?.rows.find((row) => row.status === "pending");
   const [credits, setCredits] = useState("4");
   const [amount, setAmount] = useState("240");
+  const [question, setQuestion] = useState("");
+  const [faqBusy, setFaqBusy] = useState(false);
+  const [faqResult, setFaqResult] = useState<FaqTriageResult | null>(null);
+
+  const askFaq = async () => {
+    if (faqBusy || question.trim().length < 3) return;
+    setFaqBusy(true);
+    setFaqResult(null);
+    try {
+      const result = await requestJson<FaqTriageResult>(
+        `/api/faq/triage?role=${encodeURIComponent(role)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ question, studentId }),
+        },
+      );
+      setFaqResult(result);
+      if (result.status === "escalated") toast.info(result.message);
+    } catch (caught) {
+      const next = caught instanceof ClientApiError
+        ? caught
+        : new ClientApiError("FAQ_FAILED", "问题暂时无法处理。");
+      toast.error(`${next.message} (${next.code})`);
+    } finally {
+      setFaqBusy(false);
+    }
+  };
   return (
-    <Card>
-      <CardHeader><CardTitle>课时与续费</CardTitle><CardDescription>付款成功后才增加课时；重复回调不会重复入账。</CardDescription></CardHeader>
-      <CardContent className="space-y-4">
-        <Field label="购买课时" value={credits} onChange={setCredits} type="number" />
-        <Field label="金额（AUD）" value={amount} onChange={setAmount} type="number" />
-        <Button className="w-full" disabled={busy || !studentId} onClick={() => run({ action: "create_order", studentId, creditQuantity: Number(credits), amountCents: Math.round(Number(amount) * 100), description: `${credits} lesson renewal package` })}>
-          <WalletCards />创建续费订单
-        </Button>
-        <Button variant="outline" className="w-full" disabled={busy || !pending} onClick={() => pending && run({ action: "sandbox_pay_order", orderId: String(pending.id), providerEventId: `portal_${crypto.randomUUID().replaceAll("-", "")}` })}>
-          <Send />沙盒支付最早待付订单
-        </Button>
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <Card>
+        <CardHeader><CardTitle>课时与续费</CardTitle><CardDescription>付款成功后才增加课时；重复回调不会重复入账。</CardDescription></CardHeader>
+        <CardContent className="space-y-4">
+          <Field label="购买课时" value={credits} onChange={setCredits} type="number" />
+          <Field label="金额（AUD）" value={amount} onChange={setAmount} type="number" />
+          <Button className="w-full" disabled={busy || !studentId} onClick={() => run({ action: "create_order", studentId, creditQuantity: Number(credits), amountCents: Math.round(Number(amount) * 100), description: `${credits} lesson renewal package` })}>
+            <WalletCards />创建续费订单
+          </Button>
+          <Button variant="outline" className="w-full" disabled={busy || !pending} onClick={() => pending && run({ action: "sandbox_pay_order", orderId: String(pending.id), providerEventId: `portal_${crypto.randomUUID().replaceAll("-", "")}` })}>
+            <Send />沙盒支付最早待付订单
+          </Button>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>FAQ 智能分流</CardTitle>
+          <CardDescription>只回答机构批准的基础 FAQ；涉及个人课表、退款、支付争议或安全问题会直接转人工。</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="faq-question">你的问题</Label>
+            <Textarea
+              id="faq-question"
+              value={question}
+              maxLength={1_000}
+              onChange={(event) => setQuestion(event.target.value)}
+              placeholder="例如：正式课出勤后课时怎么扣？"
+            />
+          </div>
+          <Button
+            className="w-full"
+            disabled={faqBusy || question.trim().length < 3}
+            onClick={() => void askFaq()}
+          >
+            {faqBusy ? <RefreshCw className="animate-spin" /> : <MessageCircleQuestion />}
+            {faqBusy ? "判断中…" : "查询 FAQ 或转人工"}
+          </Button>
+          {faqResult ? (
+            <Alert className={faqResult.status === "escalated" ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}>
+              <MessageCircleQuestion />
+              <AlertTitle>{faqResult.status === "answered" ? "FAQ 回答" : "已转人工"}</AlertTitle>
+              <AlertDescription>
+                {faqResult.answer ?? faqResult.message}
+                {faqResult.ticketId ? <span className="mt-1 block text-xs">跟进任务：{faqResult.ticketId}</span> : null}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -437,14 +546,14 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
               <aside>
                 {role === "operations_admin" ? (
                   <OperationsActions
-                    key={JSON.stringify(data.sections.filter((section) => section.id === "inquiries" || section.id === "trials").map((section) => section.rows.map((row) => [row.id, row.status, row.outcome, row.decision])))}
+                    key={JSON.stringify(data.sections.filter((section) => ["inquiries", "trials", "trial-attention", "low-balances"].includes(section.id)).map((section) => section.rows.map((row) => [row.id, row.status, row.outcome, row.decision, row.credits])))}
                     data={data}
                     run={run}
                     busy={busy}
                   />
                 ) : null}
                 {role === "manager_admin" ? <ManagerActions data={data} run={run} busy={busy} /> : null}
-                {role === "student" || role === "guardian" ? <PortalActions data={data} run={run} busy={busy} /> : null}
+                {role === "student" || role === "guardian" ? <PortalActions data={data} run={run} busy={busy} role={role} /> : null}
                 {role === "system_admin" ? <SystemActions run={run} busy={busy} /> : null}
                 <Link href="/" className="mt-4 flex items-center justify-center gap-2 rounded-lg border bg-white px-4 py-3 text-sm font-medium text-[var(--navy-900)] hover:bg-muted"><ArrowLeftRight className="size-4" />切换职责</Link>
               </aside>

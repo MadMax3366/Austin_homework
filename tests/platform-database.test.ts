@@ -304,3 +304,30 @@ test("state machines and overlapping effective periods are database-enforced", (
     /REFUND_EXCEEDS_ORDER/,
   );
 });
+
+test("FAQ interactions require either an approved answer or a real handoff task", () => {
+  const db = platformDatabase();
+  db.exec(`
+    INSERT INTO follow_up_tasks
+      (id,organization_id,student_id,assignee_id,task_type,status,due_at)
+    VALUES ('faq_task','org_1','student_1','admin_1','general','open',CURRENT_TIMESTAMP);
+    INSERT INTO faq_interactions
+      (id,organization_id,account_id,student_id,question_text,faq_id,
+       category,resolution,source,answer_text)
+    VALUES ('faq_answer','org_1','account_1','student_1','How are credits charged?',
+            'faq_credit_charge','credits','answered','fallback','Approved answer');
+    INSERT INTO faq_interactions
+      (id,organization_id,account_id,student_id,question_text,category,
+       resolution,source,handoff_task_id)
+    VALUES ('faq_handoff','org_1','account_1','student_1','Please refund me',
+            'payment','handoff','policy','faq_task');
+  `);
+  assert.throws(
+    () => db.exec(`INSERT INTO faq_interactions
+      (id,organization_id,account_id,student_id,question_text,category,
+       resolution,source)
+      VALUES ('faq_invalid','org_1','account_1','student_1','Unknown',
+              'other','answered','fallback')`),
+    /ck_faq_interactions_answer_shape/,
+  );
+});

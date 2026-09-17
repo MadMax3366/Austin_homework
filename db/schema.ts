@@ -861,6 +861,61 @@ export const followUpTasks = sqliteTable(
   ],
 );
 
+export const faqInteractions = sqliteTable(
+  "faq_interactions",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => userAccounts.id),
+    studentId: text("student_id").references(() => students.id),
+    questionText: text("question_text").notNull(),
+    faqId: text("faq_id"),
+    category: text("category", {
+      enum: ["schedule", "trial", "credits", "attendance", "feedback", "payment", "account", "other"],
+    }).notNull(),
+    resolution: text("resolution", {
+      enum: ["answered", "handoff"],
+    }).notNull(),
+    source: text("source", {
+      enum: ["ai", "fallback", "policy"],
+    }).notNull(),
+    answerText: text("answer_text"),
+    handoffTaskId: text("handoff_task_id").references(() => followUpTasks.id),
+    ...timestamps,
+  },
+  (table) => [
+    index("idx_faq_interactions_account_created").on(
+      table.accountId,
+      table.createdAt,
+    ),
+    index("idx_faq_interactions_resolution_created").on(
+      table.resolution,
+      table.createdAt,
+    ),
+    check(
+      "ck_faq_interactions_category",
+      sql`${table.category} IN ('schedule','trial','credits','attendance','feedback','payment','account','other')`,
+    ),
+    check(
+      "ck_faq_interactions_resolution",
+      sql`${table.resolution} IN ('answered','handoff')`,
+    ),
+    check(
+      "ck_faq_interactions_source",
+      sql`${table.source} IN ('ai','fallback','policy')`,
+    ),
+    check(
+      "ck_faq_interactions_answer_shape",
+      sql`(${table.resolution}='answered' AND ${table.answerText} IS NOT NULL AND ${table.faqId} IS NOT NULL AND ${table.handoffTaskId} IS NULL)
+          OR (${table.resolution}='handoff' AND ${table.answerText} IS NULL AND ${table.handoffTaskId} IS NOT NULL)`,
+    ),
+  ],
+);
+
 export const teacherPayRates = sqliteTable(
   "teacher_pay_rates",
   {
