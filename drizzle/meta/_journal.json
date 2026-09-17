@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1789565015201,
+      "tag": "0000_opposite_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789565156334,
+      "tag": "0001_dark_mongu",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789565226513,
+      "tag": "0002_fuzzy_wild_pack",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789565235796,
+      "tag": "0003_attendance-guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1789566071635,
+      "tag": "0004_optimize-indexes",
+      "breakpoints": true
+    }
+  ]
+}
