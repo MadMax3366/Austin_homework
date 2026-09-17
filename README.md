@@ -1,151 +1,114 @@
-# Austin Education · Teacher Attendance Vertical Slice
+# Austin Education · Student Operations System
 
-This take-home submission implements one complete workflow:
+这是一个可运行的模块化全栈作业：同一账号可切换教师、运营、主管、学生、家长和系统管理员职责，服务端会在每次读取和写入时重新校验角色与对象范围。
 
-> teacher sign-in → Melbourne-day class roster → explicit attendance → immutable lesson-credit ledger or billing exception → editable structured feedback → completed read-only result.
+核心业务链路已经接通：
 
-The narrow implementation sits inside a broader student-operations design:
+> 咨询 → 试听排课 → 老师点名与反馈 → 试听结论 → 转正式班与首期订单 → 支付入课时 → 正常上课扣课时 → 续费／退款 → 老师计薪 → 消息 outbox 与审计。
 
-- [DESIGN.md](./DESIGN.md) — concise Part A submission.
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — roles, lifecycles, modules, data model and evolution.
-- [DEMO.md](./DEMO.md) — ten-minute vertical-slice proposal.
-- [TESTING.md](./TESTING.md) — adversarial and recovery test plan.
+相关文档：
 
-## Implemented
+- [DESIGN.md](./DESIGN.md)：精简设计稿，可作为作业 Part A。
+- [ARCHITECTURE.md](./ARCHITECTURE.md)：五层架构、权限、模块、生命周期与数据设计。
+- [DEMO.md](./DEMO.md)：面试演示脚本和主动破坏测试。
+- [TESTING.md](./TESTING.md)：自动化覆盖与对抗测试矩阵。
 
-- React 19 + TypeScript responsive teacher workspace.
-- Server-rendered sign-in and server-side role/object authorisation.
-- Cloudflare D1 / SQLite with reviewed Drizzle migrations.
-- Explicit, idempotent local seed with 30 synthetic students and two teachers.
-- Frozen `SessionParticipant` snapshots, so later Enrollment changes do not rewrite history.
-- Explicit unmarked attendance, “mark all present”, and a consequential final confirmation.
-- Database-validated completion claim before Attendance/Ledger/Audit writes.
-- Idempotency key + canonical request hash + stable completion receipt.
-- Immutable CreditTransaction ledger with account/source and non-negative checks.
-- Zero-credit Attendance plus a real `BillingException` queue and admin/manager resolution API.
-- Request IDs, body limits, same-origin writes and differentiated business/infrastructure errors.
-- Session-scoped draft recovery, dirty guard, request cancellation and unknown-outcome reconciliation.
-- AI structured output, Zod validation, name/contact/date reduction, sensitive-note fallback,
-  `store:false`, two-level rate limiting and metadata-only audit.
-- Loading, empty, unauthorised, cancelled, conflict, fallback and completed states.
+## 已实现内容
 
-## Local setup
+| 工作台 | 可见内容 | 可执行操作 |
+|---|---|---|
+| 教师 | 今日课表、冻结名单、新生、余额、个人薪资 | 点名、课堂笔记、AI 家长反馈、完成课次 |
+| 运营 | 咨询、试听、待跟进、学生课时、全局课表、排课资源 | 建咨询、排试听、记录结论、转报名、完成跟进 |
+| 主管 | 排课冲突、退款、订单、课时异常、薪资周期、支持申请 | 退款审批、薪资审批／支付、限时支持审批 |
+| 学生 | 自己的课表、出勤反馈、课时、订单、消息 | 创建续费订单、沙盒支付 |
+| 家长 | 多个关联学生及其课表、反馈、课时、消息 | 切换孩子、创建订单、沙盒支付 |
+| 系统管理员 | 集成健康、后台任务、outbox、审计、支持会话 | 运行沙盒 worker、申请限时且受审计的技术支持 |
 
-Requirements: Node.js 22.13+ and npm.
+跨模块能力不是单独的“异常页”或“AI 页”：
+
+- 老师／教室／学生使用半开区间排课冲突检查，应用层预检并由数据库 trigger 防并发穿透。
+- 正式学生 `Present/Late` 扣一课时；试听参与者不扣课时；余额不足保留真实出勤并进入异常队列。
+- 完成课次同时累计一条老师薪资；费率按老师、课次类型和生效日期选择。
+- 支付回调、课时账本、支付流水、审计和已支付薪资有唯一约束或不可变保护。
+- AI 只产出可编辑文本草稿；脱敏、结构校验或 provider 失败均不会影响点名和计费。
+
+## 技术栈
+
+- React 19、TypeScript、Vinext／Next Route Handlers、Tailwind、shadcn/ui。
+- Cloudflare D1／SQLite、Drizzle schema 与顺序迁移。
+- ChatGPT Identity 作为身份提供方；内部 `AccountRoleAssignment` 做授权。
+- 可选 OpenAI structured output；无 key 时使用确定性本地 fallback。
+- Payment、Bank、Email、SMS、WeChat 以 adapter 配置建模；本仓库只启用安全的 sandbox，不伪装成真实资金或消息集成。
+
+## 本地运行
+
+要求 Node.js 22.13+。
 
 ```bash
 npm run install:ci
 npm run build
 ```
 
-Apply the migrations once, in order:
+在一个新的本地 D1 上顺序应用迁移：
 
 ```bash
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_opposite_hulk.sql
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_dark_mongu.sql
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0002_fuzzy_wild_pack.sql
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0003_attendance-guards.sql
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0004_optimize-indexes.sql
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0005_broken_loners.sql
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0006_harden-completion.sql
+for migration in drizzle/*.sql; do
+  node --import ./scripts/sites-env.mjs \
+    ./node_modules/wrangler/bin/wrangler.js d1 execute DB \
+    --local --config dist/server/wrangler.json \
+    --persist-to .wrangler/state --file "$migration"
+done
 ```
 
-Seed synthetic local data explicitly, then start the app:
+然后加载可重复执行的合成数据并启动：
 
 ```bash
 npm run db:seed
-npm run dev
+npm start
 ```
 
-Open [http://localhost:5173](http://localhost:5173) and choose **Sign in with ChatGPT**.
-The local Sites runtime signs in `seedy@sites.test` as teacher Mei Lin.
+打开 [http://127.0.0.1:8787](http://127.0.0.1:8787)。本地身份为 `seedy@sites.test`，角色选择页可进入六种职责。所有姓名、联系方式、订单和交易均为合成数据；正常应用路由不会自动造数据。
 
-The normal application routes never create or mutate demo data. The seed command is local-only
-and creates:
+## API
 
-- one current class owned by Mei;
-- a protected class owned by Arjun;
-- exactly one new student;
-- balances of 14, 8, 3, 1 and 0 credits;
-- frozen participant snapshots.
-
-All names and contact details are synthetic.
-
-## Optional live AI
-
-Without a key, “Draft family update” returns a validated local fallback. The attendance workflow
-does not depend on the provider.
-
-Copy `.env.example` to `.env.local`:
-
-```dotenv
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-5-mini
-```
-
-The provider request is server-side, uses `store:false` and receives only reduced class-note text.
-Do not commit secrets or real student information.
-
-## API surface
-
-| Method | Route | Authorisation |
+| Method | Route | 说明 |
 |---|---|---|
-| GET | `/api/workspace?sessionId=...` | Teacher; own sessions only |
-| POST | `/api/sessions/:sessionId/complete` | Teacher; assigned session; Idempotency-Key |
-| POST | `/api/feedback/draft` | Teacher; assigned scheduled session |
-| GET | `/api/admin/billing-exceptions` | Admin owner or Manager |
-| POST | `/api/admin/billing-exceptions/:id/resolve` | Admin owner or Manager; Idempotency-Key |
+| GET | `/api/account` | 当前组织账号及有效角色 |
+| GET | `/api/platform/overview?role=...` | 运营、主管、学生、家长、系统工作台；服务端角色校验 |
+| POST | `/api/platform/commands?role=...` | 15 类受控业务命令；命令内部做对象授权和状态机 |
+| GET | `/api/workspace?sessionId=...` | 老师自己的今日课次、名单、余额与薪资摘要 |
+| POST | `/api/sessions/:sessionId/complete` | 老师完成课次；要求 `Idempotency-Key` |
+| POST | `/api/feedback/draft` | 当前任课老师生成可编辑反馈草稿 |
+| GET/POST | `/api/admin/billing-exceptions...` | 课时异常查询与审计式处理 |
 
-## Validation
+所有写请求限制真实 UTF-8 body 大小、校验 JSON、拒绝 cross-site 浏览器请求，并返回稳定错误码和 `X-Request-Id`。高风险流程通过 provider event、唯一业务键、状态机和事务保证单一赢家。
+
+## 验证
 
 ```bash
 npm test
 npm run lint
+npx tsc --noEmit
 npm run build
 ```
 
-The test suite includes:
+自动化测试覆盖：
 
-- domain schemas, billing policy, fallback and Melbourne business date;
-- clean migration replay in in-memory SQLite;
-- frozen roster, completion claim, teacher/participant, ledger and enrollment constraints;
-- zero-credit exception and immutable-ledger checks.
+- 0000–0010 clean migration，以及 0006 → 最新版本的数据保留升级；
+- 角色主体约束、枚举／JSON CHECK、半开区间排课、班级容量；
+- 冻结名单、出勤 claim、余额不为负、账本和审计不可变；
+- 多试听生、唯一待处理试听、支付／退款／薪资／支持会话状态机；
+- 实际请求字节限制、same-origin 防护和错误响应契约。
 
-Manual API checks additionally cover cross-teacher 403, exact replay, changed-payload conflict
-and the zero-credit exception result. See [TESTING.md](./TESTING.md) for the full matrix.
+本地生产构建还完成过六角色 overview smoke、支付回调重放、退款、薪资、outbox、越权 403、冲突 409 和 break-glass 自批 409 验证。
 
-## Architecture decisions
+## 边界与诚实声明
 
-- A modular monolith is appropriate for roughly 1,000 students and 60 weekly classes.
-- `ClassSeries` is the recurring plan; `LessonSession` is a real occurrence.
-- `SessionParticipant` freezes the operational roster for history.
-- Attendance is the learning-service fact; CreditTransaction is the financial fact.
-- Credit balance is `SUM(immutable ledger)`, not a mutable field.
-- A database-triggered claim turns stale-version completion into a transactional SQL failure.
-- LLM output is untrusted text and never controls authorisation, attendance or charging.
+- 题面描述的是单一教育机构，旧核心表按单机构运行；新账号、订单、任务、集成和系统表已带 `organization_id`。若产品转为真正 SaaS，必须给所有旧核心实体补租户外键，并做双租户隔离测试。
+- 支付、银行、短信和微信是 sandbox adapter；上线前需要真实 provider webhook 签名、对账、密钥管理、重试租约和 dead-letter。
+- 当前退款策略刻意只支持“未使用课包的全额退款”；部分退款、手续费和消费归因需要业务规则确认。
+- 完整生产发布仍需要远程 D1 并发压测、备份恢复演练、监控告警和真实 IdP 生命周期管理。
 
-## Known boundaries
+## AI 工具披露
 
-- The implemented UI is teacher-focused; the billing-exception resolution is API/domain complete
-  but does not yet have a full Admin console.
-- Feedback is one class-level family-update draft, not a per-student report.
-- Inquiry/trial CRM, schedule editing, payment processing, messaging and family portal are design-only.
-- The committed SQLite tests protect DB invariants; a production rollout should add remote D1
-  concurrency/E2E tests, monitoring and backup/restore rehearsal.
-
-## AI-tool disclosure
-
-I used Codex for requirement decomposition, alternative-slice comparison, initial scaffolding,
-schema/API/UI drafts, adversarial review, testing and documentation. I reviewed and changed the
-generated design rather than accepting it as authoritative.
-
-Examples of rejected or corrected suggestions:
-
-- broad lifecycle CRUD instead of one deep slice;
-- mutable `remainingCredits` instead of a ledger;
-- AI-controlled attendance or an AI chat box;
-- automatic family messaging;
-- microservices and a global client store at this scale;
-- runtime demo seeding;
-- defaulting every unmarked student to Present;
-- checking an optimistic lock only after a database batch had committed.
+我使用 Codex 做需求拆解、架构对抗审查、schema／API／UI 草拟、迁移验证、破坏测试和文档整理。生成内容经过人工式审查并被多次推翻或收紧，例如拒绝可变余额、AI 控制业务、系统管理员永久业务超级权限、运行时自动 seed，以及仅靠前端隐藏菜单的“权限控制”。

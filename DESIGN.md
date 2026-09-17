@@ -1,82 +1,77 @@
-# 学生管理系统设计
+# 学生运营系统设计（精简版）
 
 ## 1. 业务理解
 
-系统服务于教育机构的招生与履约，而不是学生表 CRUD。完整生命周期是：咨询 → 试听 → 报名购课 → 固定班 → 具体课次 → 出勤与反馈 → 续费或流失。
+这不是学生 CRUD，而是一条持续数年的教育服务链路：
 
-角色关注点：
+> 家长／学生咨询 → 试听 → 报名购课 → 固定班与具体课次 → 老师／学生出勤 → 课堂反馈 → 课时消耗 → 续费、暂停或流失。
 
-- **Admin／教务**：自己负责的线索、试听、分班、低余额和续费。
-- **Teacher**：今天的课、有效名单、新生、点名和课堂反馈。
-- **主管管理员（Manager Admin）**：这是为高风险操作和职责分离推导出的权限层，处理负责人转移、课时调整、退款、异常和审计。
-- **Student／Guardian**：是必不可少且彼此独立的核心业务对象；首版是内部员工系统，所以暂不作为登录角色。
+系统面对五类使用者：教师、运营管理员、主管管理员、学生／家长，以及负责诊断和恢复的系统管理员。Student 与 Guardian 既是核心业务对象，也是已经实现的受限门户身份。
 
-## 2. 第一版范围
+## 2. 架构选择
 
-实现一条完整垂直切片：
+当前规模约 1,000 名学生、10 名运营、20 名老师、每周 60 节课，采用模块化单体：一个部署、一个关系数据库、按领域服务隔离。它比微服务更容易维持报名、课时、退款和薪资的一致事务，也更适合 take-home 被面试官直接审查。
 
-> Teacher 登录 → 查看 Melbourne 当天自己的课次 → 查看冻结名单和余额 → 明确点名 → 原子写入出勤与课时流水／异常 → 保存课堂记录和可编辑 AI 草稿。
-
-暂不实现咨询试听、排课编辑、支付退款、消息发送、家长端、报表和多校区。原因是权限、事务、幂等和可恢复性比页面数量更能证明第一版是否可靠。完整架构见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
-
-## 3. 数据模型
+请求路径为：
 
 ```text
-Student ─< StudentGuardian >─ Guardian
-Student ─< Enrollment >─ ClassSeries ─< LessonSession
-LessonSession ─< SessionParticipant ─ Attendance
-Student ─ CreditAccount ─< CreditTransaction
-Attendance ─ 0..1 BillingException
-StaffUser ─< LessonSession / AuditEvent
+身份提供方 → 账号与角色授权 → 角色工作台 → Route Handler
+→ 领域状态机／对象授权 → D1 transaction → audit/outbox → 外部 adapter
 ```
 
-- Student 当前 owner 便于查询；生产目标用带起止时间的 `AdminAssignment` 保存转交历史。
-- `ClassSeries` 是每周规则，`LessonSession` 是某天实例，可独立取消、改时或代课。
-- `SessionParticipant` 在课次形成时冻结，退班不会改写历史名单。
-- 课时是不可变账本：PURCHASE `+n`、ATTENDANCE `-1`、ADJUSTMENT `±n`、REVERSAL 反向冲销；余额由流水求和。
+浏览器只提交意图，不能自报 role、owner、余额、扣课数量或审批权。数据库用 FK、CHECK、UNIQUE 和 trigger 保护应用层可能遗漏或并发穿透的关键不变量。
 
-## 4. 关键规则
+## 3. 核心模块
 
-| 规则 | 强制层 |
+| 模块 | 主要事实与规则 |
 |---|---|
-| 老师只能操作分配给自己的具体课次 | 服务端授权 + DB trigger |
-| 名单必须来自 SessionParticipant，且每人恰好一次 | 服务端 + UNIQUE |
-| 未来、取消、已完成课次不能再次完成 | 领域状态机 |
-| Present／Late 扣 1；Absent 不扣 | 领域计费策略 |
-| 出勤、扣课／异常、审计、完成状态全成或全回滚 | D1 transaction |
-| 余额不足仍保存真实出勤，不开负账，创建 BillingException | 服务端 + DB trigger |
-| 同一 Attendance 最多一笔扣课流水 | UNIQUE source |
-| 同 key 同 payload 安全 replay；同 key 不同 payload 返回 409 | CompletionClaim + hash |
-| 已完成记录只追加 reversal／纠错，不覆盖历史 | 服务层 + 账本不可变 trigger |
-| LLM 只生成草稿；结构校验失败则 fallback，不能决定业务 | 独立 AI 服务 |
+| 学生与招生 | Student、Guardian、Inquiry、Owner、FollowUp；试听完成且结论为 enrol 才能转正式 |
+| 班级与排课 | ClassSeries 是周期计划，LessonSession 是实际课次；试听、正常课、补课、私教共用引擎 |
+| 教学履约 | SessionParticipant 冻结历史名单；Attendance 逐人明确；反馈由老师审核 |
+| 课时与续费 | 余额由不可变 CreditTransaction 求和；试听不扣，余额不足不开负账 |
+| 财务 | Order、PaymentTransaction、Refund；回调去重，全额退款要求购买课时未被消费 |
+| 老师薪资 | 完成一个课次只生成一个 PayrollEntry；费率按老师、课次类型和日期选择 |
+| 消息与跟进 | FollowUpTask、Message、OutboxEvent；外部失败不回滚已成立的业务事实 |
+| 组织与系统 | 角色分配、机构设置、集成健康、后台任务、审计、限时技术支持 |
 
-## 5. 假设与问题
+异常处理和 AI 是横切能力，不单独成为业务孤岛：排课表单内报告冲突，点名内处理零余额，财务内处理退款失败；AI 嵌入反馈和文本草稿，永不决定权限、出勤、计费或审批。
 
-假设：业务时间统一按 `Australia/Melbourne`；Present／Late 扣一课时，Absent 不扣；余额不足不抹掉出勤事实；老师不能直接修改已完成历史。
+## 4. 关键业务规则
 
-最想确认：
+| 规则 | 强制位置 |
+|---|---|
+| 页面入口、API 和对象范围三次校验角色 | 服务端授权 |
+| 老师只能完成自己被分配的课次 | 服务层 + DB trigger |
+| 老师、教室、学生时间区间均不得重叠；相邻边界允许 | 服务层预检 + DB trigger |
+| 正式生 Present／Late 扣 1，Absent 和试听生不扣 | 参与者计费策略 |
+| 出勤、课时、薪资、审计、完成状态全成或全回滚 | D1 batch transaction |
+| 支付 provider event 只处理一次；账本 source 唯一 | UNIQUE + replay receipt |
+| 退款申请者不能审批自己的退款 | 服务端职责分离 |
+| 薪资只能 open → approved → paid，paid 后不可改删 | 状态机 trigger |
+| 系统管理员默认无业务写权；应急支持需独立审批、scope、到期时间和审计 | break-glass 模型 |
+| LLM 输出必须结构校验且可编辑；失败走本地 fallback | AI adapter 边界 |
 
-1. 请假、no-show、补课和迟到分别如何扣课？
-2. 课时属于学生、家庭、课程还是具体课包？是否到期？
-3. 零余额是允许欠课、禁止上课，还是进入人工队列？
-4. 老师可在多久内纠错，何时需要 Admin／Manager 审批？
-5. 反馈发送给谁、通过什么渠道、是否需要审核与同意？
+## 5. 重要建模决定
 
-## 6. 页面与信息结构
+- `ClassSeries.sessionKind` 是班级默认值，`LessonSession.sessionKind` 是历史快照，允许具体课次覆盖。
+- 试听与正常课使用同一排课、名单、出勤和计薪引擎；差异落在 participant billing policy 和 pay rate，而不是复制两套流程。
+- `CreditTransaction`、`PaymentTransaction`、`AuditEvent` 不更新、不删除；纠错通过 reversal 或新事件表达。
+- Guardian 通过 `guardian_id → student_guardians` 获取多个孩子，不能在 role assignment 中硬绑一个孩子。
+- 系统管理员和主管是独立授权含义；同一自然账号即使同时持有两种角色，也不能自批自己的 break-glass。
 
-```text
-Sign in
-└─ Teacher Today
-   ├─ 今日课次：时间、班级、人数、状态
-   └─ 当前课次
-      ├─ 冻结名单、新生、余额预警
-      ├─ Present / Late / Absent（必须逐人确认）
-      ├─ 课堂原始笔记 → AI 可编辑草稿
-      └─ 最终确认：人数、扣课、待处理异常
-```
+## 6. 错误与恢复
 
-桌面使用侧栏和工作区；手机端课程切换置顶、学生转为卡片。必须覆盖 loading、无课、无权限、过期登录、冲突、保存失败、网络结果未知、AI 降级和完成只读状态。
+- 401 未登录、403 无角色／对象越权、409 状态或并发冲突、422 输入／业务校验、413 body 过大、503 仅用于真实基础设施不可用。
+- 每个错误带稳定 code 与 request ID；前端保留表单并允许安全重试。
+- 课次完成使用 Idempotency-Key 与 request hash；支付使用 provider event；其余高风险命令由唯一业务键和状态机保证单一赢家。
+- Outbox 把“业务事实提交”与“外部消息发送”分开；当前 worker 为 sandbox，失败可重试而不重复业务写入。
 
-## 7. 为什么选择这个切片
+## 7. 需要产品方确认
 
-它同时验证班级／课次区分、角色化首页、名单历史、对象级权限、课时资金属性、事务、幂等、异常队列和 AI 降级。范围足够窄，可以在固定时间内做透，并允许面试官绕过 UI 直接破坏测试。
+1. 请假、迟到、no-show、补课分别如何扣课和计薪？
+2. 课时属于学生、家庭、课程还是课包，是否过期或可转让？
+3. 部分退款、手续费、已消费课时的退款如何分摊？
+4. 老师纠错窗口多长，超过窗口由谁审批？
+5. 家长反馈是否逐学生、是否需要双人审核，以及各消息渠道的同意与退订规则？
+
+这些未确认政策不会被伪装成“已知需求”；当前实现给出安全默认值，并把策略集中在领域服务和机构设置中。
