@@ -836,7 +836,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
           {loadErrorCode === "AUTH_REQUIRED" ? (
             <Button asChild className="mt-5">
               <a href="/signin-with-chatgpt?return_to=/" target="_top">
-                Sign in again
+                重新登录
               </a>
             </Button>
           ) : (

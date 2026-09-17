@@ -22,11 +22,10 @@ function SignIn() {
           Austin Education
         </p>
         <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em] text-[var(--navy-950)]">
-          Teacher workspace
+          学生运营系统
         </h1>
         <p className="mt-3 text-base leading-relaxed text-muted-foreground">
-          Sign in to view your assigned classes, record attendance, and complete
-          class notes.
+          登录后根据账户权限进入对应工作台。
         </p>
         <Button
           asChild
@@ -35,12 +34,11 @@ function SignIn() {
         >
           <a href={chatGPTSignInPath("/")} target="_top">
             <LockKeyhole />
-            Sign in with ChatGPT
+            登录系统
           </a>
         </Button>
         <p className="mt-5 text-center text-xs leading-relaxed text-muted-foreground">
-          Access is restricted to active staff. Every attendance change is
-          attributed to your account.
+          仅限已授权账户访问；操作会记录到当前账号。
         </p>
       </section>
     </main>

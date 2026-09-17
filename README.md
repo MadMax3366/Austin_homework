@@ -59,7 +59,7 @@ npm run demo:setup
 npm run demo
 ```
 
-打开 [http://localhost:5173](http://localhost:5173)，点击 **Sign in with ChatGPT**。本地开发中间件只会设置合成账号 `seedy@sites.test` 的 HttpOnly cookie，不访问真实 ChatGPT；登录后可切换六种角色并演示 Part B。
+打开 [http://localhost:5173](http://localhost:5173)，点击 **登录系统**。本地演示使用预置测试账号，不连接外部身份服务；登录后可切换六种角色并演示 Part B。
 
 `demo:setup` 会依次构建、把所有未应用迁移写入同一个 `.wrangler/state` 本地 D1，并执行可重复 Seed。再次执行是安全的：迁移会跳过已应用版本，Seed 不会重复业务数据。
 
@@ -134,16 +134,6 @@ npm run check:license
 
 我使用 Codex 做需求拆解、架构对抗审查、schema／API／UI 草拟、迁移验证、破坏测试和文档整理。生成内容经过人工式审查并被多次推翻或收紧，例如拒绝可变余额、AI 控制业务、系统管理员永久业务超级权限、运行时自动 seed，以及仅靠前端隐藏菜单的“权限控制”。
 
-## 许可、来源与防误用
+## 许可
 
-本仓库公开可见是为了面试评估，不代表开源。权利人为 **Junfeng Yan（GitHub：MadMax3366）**。原创建内容采用 [Austin Evaluation-Only License 1.0](./LICENSE.md)；GitHub 平台条款允许的站内查看／fork 权利不受该文件撤回，但公开可见不会额外授予商业使用、产品集成、再分发、衍生提交或 AI/ML 训练权限。
-
-- 权利与评估期限：[LICENSE.md](./LICENSE.md)
-- 醒目权利声明：[NOTICE.md](./NOTICE.md)
-- 第三方 MIT 边界：[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
-- 作者与时间证据：[PROVENANCE.md](./PROVENANCE.md)
-- 贡献政策：[CONTRIBUTING.md](./CONTRIBUTING.md)
-- 具名评估授权邮件模板：[EVALUATOR_AUTHORIZATION_TEMPLATE.md](./EVALUATOR_AUTHORIZATION_TEMPLATE.md)
-- GitHub ruleset、签名 tag 和评估后收口清单：[REPOSITORY_HARDENING.md](./REPOSITORY_HARDENING.md)
-
-公开仓库无法技术上阻止复制。更强的控制方式是：向具名面试官发出有到期日的书面评估授权，提交后创建受保护的签名 tag／Release，并在评估结束后将仓库转为 private。已经存在的 fork 或本地副本不能靠可见性变更自动收回。
+© 2026 **Junfeng Yan（GitHub：MadMax3366）**。保留所有权利。本仓库仅授权面试评估使用，不是开源软件。除 GitHub 平台条款明确允许的站内操作及第三方材料原有许可外，未经书面许可，不得复制、再分发、商业使用、产品集成、改编、提交衍生方案或用于 AI/ML 训练。详见 [LICENSE.md](./LICENSE.md)；第三方材料见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
