@@ -90,9 +90,9 @@ flowchart TB
 | 下单／支付 | — | 代办 | 查看／审批 | 自己 | 关联孩子 | — |
 | 退款 | — | 发起 | 独立审批 | — | 通过运营申请 | — |
 | 老师薪资 | 自己只读 | 摘要 | 审批／支付 | — | — | 仅任务健康 |
-| 系统任务／集成 | — | — | 设置与审批 | — | — | 诊断、重试、申请支持 |
+| 系统任务／集成 | — | — | 设置与审批 | — | — | 诊断、outbox 状态处理、申请支持 |
 
-授权不靠隐藏菜单：动态页面、overview API、command API 和领域对象都会重新检查。Guardian 通过关联表获得多个孩子；系统管理员不是永久业务超级用户。即使同一个账号同时持有 Manager 和 System Admin，也不能审批自己的应急权限申请。
+授权不靠隐藏菜单：动态页面、overview API、command API 和领域对象都会重新检查。Guardian 通过关联表获得多个孩子；运营 owner scope 同时约束行动队列和续费／退款写操作。系统管理员不是永久业务超级用户。即使同一个账号同时持有 Manager 和 System Admin，也不能审批自己的应急权限申请。当前 break-glass 已实现申请／审批模型，但获批 scope 尚未被业务 API 消费，不能声称已经临时放权。
 
 ## 3. 共享业务模块
 
@@ -180,6 +180,8 @@ erDiagram
   PAYROLL_PERIOD ||--o{ PAYROLL_ENTRY : groups
   ORGANIZATION ||--o{ OUTBOX_EVENT : emits
   USER_ACCOUNT ||--o{ SUPPORT_SESSION : requests
+  USER_ACCOUNT ||--o{ FAQ_INTERACTION : asks
+  FAQ_INTERACTION }o--o| FOLLOW_UP_TASK : escalates
 ```
 
 Credit balance 是不可变流水之和：purchase `+n`、attendance `-1`、adjustment `±n`、reversal 反向冲销。Payment、Credit、Audit 和 paid Payroll 不直接覆盖历史。
@@ -212,6 +214,8 @@ sequenceDiagram
   O->>API: 发起未使用课包退款
   M->>API: 独立审批
   API->>DB: Refund + reversal + immutable payment record
+  G->>API: 提交 FAQ 问题
+  API->>DB: 批准 FAQ 回答，或 FAQInteraction + Message + owner FollowUp
   DB-->>OUT: 待发送事件
 ```
 
@@ -227,12 +231,13 @@ sequenceDiagram
 | 支付 webhook 重放 | provider event 唯一；相同订单返回 idempotent replay |
 | 零余额出勤 | 保存 Attendance，不开负账，生成 BillingException |
 | 外部消息失败 | 业务事务保留，Outbox 重试；不重复业务写入 |
-| LLM 超时／非法结构／敏感内容 | 本地 fallback；不影响点名和计费 |
+| LLM 超时／非法结构／敏感内容 | 教师反馈走本地 fallback；FAQ 精确匹配批准条目，否则转人工 |
+| FAQ 要求退款、改课、医疗／安全建议 | 不调用自由回答；原子创建 owner 人工任务 |
 | 并发穿过应用预检 | DB UNIQUE／trigger 决定单一赢家，映射为业务 409 |
 
 ## 8. 当前边界
 
 - 题面是一家机构，旧核心表按单租户工作；新平台表已带组织边界。真正 SaaS 化要给所有旧核心实体增加 `organization_id` 并执行双租户隔离测试。
-- Payment、Bank、Email、SMS、WeChat 目前是 sandbox adapter 和健康配置，不代表已接真实资金或消息服务。
+- Payment 是可执行 sandbox；Bank 只有配置占位，Email／SMS／WeChat 只有 Message／Outbox 模型和配置，尚无发送 adapter。
 - 当前只允许未使用课包的全额退款；部分退款和手续费需要产品政策。
 - 生产化仍需 webhook 签名、队列 lease/dead-letter、监控、备份恢复和远程 D1 并发压测。

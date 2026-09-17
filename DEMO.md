@@ -1,54 +1,54 @@
 # 面试演示脚本
 
-## 主 Demo：10 分钟教师履约切片
+## Part B 主 Demo：10 分钟 Admin 行动中心
 
 | 时间 | 操作 | 要讲的判断 |
 |---:|---|---|
-| 0:00 | 登录并进入角色选择 | 一个身份可有多职责；服务端每次重新授权 |
-| 0:40 | 进入教师工作台 | Melbourne 业务日，只返回自己的课；同时显示个人薪资摘要 |
-| 1:20 | 打开名单 | 名单来自 SessionParticipant snapshot，退班不会改写历史 |
-| 2:00 | 展示正式生和试听生 | 同一引擎；试听标签明确且不扣课时 |
-| 2:40 | 点名 Present／Late／Absent | 初始未点名，不能默认全班 Present |
-| 3:30 | 展示余额预警和零余额 | 余额由不可变流水求和；余额不足仍保留真实出勤 |
-| 4:20 | 输入课堂事实并生成反馈 | AI 只产出可编辑草稿；失败走 fallback |
-| 5:20 | 最终确认并完成 | Attendance、Credit／Exception、Payroll、Audit、Outbox 原子提交 |
-| 6:20 | 刷新 | 证明真实持久化；完成后只读 |
-| 7:00 | 打开主管异常队列 | 零余额生成 BillingException，不出现负数 |
-| 8:00 | 重放同一请求 | 相同 key 安全 replay；跨课次复用返回 409 |
-| 9:00 | 尝试另一老师的课 | 404／403 且零写入 |
+| 0:00 | 登录并选择运营角色 | 可信身份和角色来自服务端；同一账号可有多职责，但每次 API 都重新授权 |
+| 0:40 | 打开运营首页 | 第一屏直接回答题面：哪些试听完成未跟进、哪些本人学生课时 ≤ 机构阈值 |
+| 1:30 | 查看“试听完成待跟进” | 聚合“已上试听但结果未录”和“结果已录但人工 follow-up 仍 open”，不用跨 Tab 拼信息 |
+| 2:20 | 记录试听 attended + enrol | 老师必须先完成出勤；服务端状态机拒绝提前或 cancelled 直接 enrol |
+| 3:10 | 完成试听跟进并转正式 | 更新任务、招生状态、Enrollment 和首期待付订单，全部留审计 |
+| 4:20 | 查看“低课时学生（≤3）” | 只列 active 且归当前 Admin owner 的学生；阈值来自机构设置，不包含 prospect |
+| 5:10 | 为低课时学生准备续费订单 | Admin 只建 pending 订单，不替家长扣款；跨 owner studentId 返回 403 |
+| 6:10 | 切到学生／家长门户支付 | Payment + purchase ledger + outbox 原子写入；相同 provider event 安全 replay |
+| 7:00 | FAQ 问“课时怎么扣” | LLM 只选择批准 FAQ；服务端返回 canonical answer，不直接采用自由生成文本 |
+| 7:50 | FAQ 问个人退费／余额争议 | policy 直接跳过自动回答，原子创建 Message、FAQInteraction 和 owner FollowUpTask |
+| 8:40 | 切回运营任务队列 | 人工 ticket 已出现在当前 Admin 队列，证明“转人工”不是前端提示语 |
+| 9:20 | 主动做 owner 越权测试 | 伪造另一 Admin 的 studentId；服务端 403、数据库零写入 |
 
-## 完整业务链：额外 5 分钟
+## 支撑切片：教师履约 5 分钟
 
-1. 运营新建咨询：一次生成 prospect、guardian、credit account、inquiry、follow-up 和 audit。
-2. 安排试听：故意制造老师重叠，展示 409 和明确错误码；换时间成功。
-3. 对已完成出勤的试听记录“attended + enrol”，再转正式班；系统生成 Enrollment 和待支付订单。
-4. 切到学生／家长门户，家长在多个孩子之间切换，创建订单并用 sandbox 支付；重复回调不重复入课时。
-5. 运营发起退款，主管审批；展示申请者不能自批、已消费课时不能直接冲成负数。
-6. 主管审批并支付薪资周期；paid 后数据库拒绝修改。
-7. 系统管理员运行 outbox、申请限时支持；同一账号切到 Manager 自批时返回 409，独立主管才能批准。
+1. 教师打开自己的今日课次和冻结名单，新生与余额风险一眼可见。
+2. 逐人标记 Present／Late／Absent；试听参与者不扣课时。
+3. 输入课堂事实，生成 strict structured output 的可编辑反馈；无 key／失败时使用本地 fallback。
+4. 完成课次后原子写 Attendance、Credit／BillingException、Payroll、Audit 和 Outbox。
+5. 重放相同 Idempotency-Key 返回稳定 receipt；跨课次复用 key 返回 409。
 
 ## 必须主动展示的破坏测试
 
 | 攻击 | 预期 |
 |---|---|
+| Admin 查询／修改另一个 owner 的学生 | 403 STUDENT_SCOPE_FORBIDDEN |
 | 学生调用 `create_inquiry` | 403 ROLE_FORBIDDEN |
 | 家长传入未关联 `studentId` | 403 STUDENT_SCOPE_FORBIDDEN |
 | Evil Origin 发写请求 | 403 CROSS_ORIGIN_REQUEST_REJECTED |
 | 同老师／教室／学生重叠排课 | 409；数据库无新课次 |
-| 试听未点名先写“attended” | 409 TRIAL_ATTENDANCE_REQUIRED |
+| 试听未点名先写 attended | 409 TRIAL_ATTENDANCE_REQUIRED |
 | Cancelled／no-show 直接 enrol | 422 INVALID_TRIAL_DECISION |
+| FAQ 要求退款、改课、医疗／安全建议 | 不自动回答；创建 owner 人工任务 |
+| FAQ provider 超时或结构非法 | approved FAQ 本地匹配，否则转人工；业务不中断 |
 | 同 payment event 换订单 | 409 PAYMENT_EVENT_REUSED |
 | 重复批准退款／支付薪资 | 409 状态冲突 |
-| 更新任意机构 setting key | 422 SETTING_NOT_ALLOWED |
 | 系统管理员自批 break-glass | 409 SEPARATION_OF_DUTIES |
 
 ## 演示成功判据
 
-- 每次刷新后状态保持。
-- 预期失败返回 403／409／422，而不是 500。
+- Admin 两个行动队列有真实、owner-scoped 数据和可执行动作。
+- 刷新后状态保持；预期失败返回 403／409／422，而不是 500。
+- FAQ 自动回答只来自批准条目；人工转接能在数据库和运营任务队列中找到。
 - 支付 replay 只有一条 PaymentTransaction 和一条 purchase ledger。
 - 试听参与者没有 attendance debit；每个课次最多一条 PayrollEntry。
 - `PRAGMA foreign_key_check` 为空，所有课时账户余额均不小于 0。
-- Outbox 重跑返回 0 个新处理项，不重复发送业务事件。
 
-不要声称 sandbox 是真实支付或真实短信。它展示的是 adapter 契约、事务边界、幂等和失败恢复；真实 provider 接入是独立上线工作。
+不要声称 sandbox 是已接通的真实支付、银行或消息服务。Payment sandbox 有真实业务副作用；Bank 和消息渠道目前主要是配置／outbox 边界。
