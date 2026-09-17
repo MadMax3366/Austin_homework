@@ -574,6 +574,55 @@ export const userAccounts = sqliteTable(
   ],
 );
 
+export const accountCredentials = sqliteTable(
+  "account_credentials",
+  {
+    accountId: text("account_id")
+      .primaryKey()
+      .references(() => userAccounts.id),
+    passwordSalt: text("password_salt").notNull(),
+    passwordHash: text("password_hash").notNull(),
+    iterations: integer("iterations").notNull(),
+    failedAttempts: integer("failed_attempts").notNull().default(0),
+    lockedUntil: text("locked_until"),
+    passwordUpdatedAt: text("password_updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    check(
+      "ck_account_credentials_iterations",
+      sql`${table.iterations} BETWEEN 100000 AND 1000000`,
+    ),
+    check(
+      "ck_account_credentials_failed_attempts",
+      sql`${table.failedAttempts} BETWEEN 0 AND 20`,
+    ),
+  ],
+);
+
+export const accountSessions = sqliteTable(
+  "account_sessions",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => userAccounts.id),
+    expiresAt: text("expires_at").notNull(),
+    revokedAt: text("revoked_at"),
+    lastSeenAt: text("last_seen_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_account_sessions_account_expiry").on(
+      table.accountId,
+      table.expiresAt,
+    ),
+  ],
+);
+
 export const accountRoleAssignments = sqliteTable(
   "account_role_assignments",
   {

@@ -233,6 +233,26 @@ export function melbourneDate(now = new Date()): string {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
+export function weekRangeForDate(date: string): {
+  startsOn: string;
+  endsOn: string;
+} {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error("Invalid business date.");
+  }
+  const value = new Date(`${date}T12:00:00Z`);
+  const day = value.getUTCDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const monday = new Date(value);
+  monday.setUTCDate(monday.getUTCDate() + mondayOffset);
+  const sunday = new Date(monday);
+  sunday.setUTCDate(sunday.getUTCDate() + 6);
+  return {
+    startsOn: monday.toISOString().slice(0, 10),
+    endsOn: sunday.toISOString().slice(0, 10),
+  };
+}
+
 export function melbourneTime(now = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-AU", {
     timeZone: MELBOURNE_TIME_ZONE,

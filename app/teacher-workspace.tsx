@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import {
   AlertCircle,
   BookOpen,
@@ -11,9 +10,7 @@ import {
   Clock3,
   Coins,
   LogOut,
-  MessageSquareText,
   RefreshCw,
-  ShieldCheck,
   Sparkles,
   Users,
   WalletCards,
@@ -36,7 +33,6 @@ import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyContent,
-  EmptyDescription,
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
@@ -46,6 +42,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
+import { WeekCalendar } from "@/components/week-calendar";
 import type { AttendanceStatus, FeedbackDraft } from "@/lib/domain";
 import type {
   ApiErrorBody,
@@ -57,7 +54,6 @@ import type {
 type Viewer = {
   displayName: string;
   email: string;
-  signOutPath: string;
 };
 
 type AttendanceDraftStatus = AttendanceStatus | null;
@@ -107,9 +103,9 @@ class ClientApiError extends Error {
 }
 
 const statusOptions: { value: AttendanceStatus; label: string }[] = [
-  { value: "present", label: "Present" },
-  { value: "late", label: "Late" },
-  { value: "absent", label: "Absent" },
+  { value: "present", label: "出勤" },
+  { value: "late", label: "迟到" },
+  { value: "absent", label: "缺席" },
 ];
 
 async function requestJson<T>(
@@ -142,7 +138,7 @@ async function requestJson<T>(
       } catch {
         throw new ClientApiError(
           "INVALID_SERVER_RESPONSE",
-          "The server returned an unreadable response.",
+          "服务器返回了无法读取的数据。",
           response.status,
         );
       }
@@ -151,14 +147,14 @@ async function requestJson<T>(
       const error = payload as ApiErrorBody | null;
       throw new ClientApiError(
         error?.error?.code ?? "REQUEST_FAILED",
-        error?.error?.message ?? "The request failed.",
+        error?.error?.message ?? "请求失败。",
         response.status,
       );
     }
     if (!payload) {
       throw new ClientApiError(
         "EMPTY_SERVER_RESPONSE",
-        "The server returned an empty response.",
+        "服务器返回了空数据。",
         response.status,
       );
     }
@@ -169,14 +165,14 @@ async function requestJson<T>(
       throw new ClientApiError(
         timedOut ? "REQUEST_TIMEOUT" : "REQUEST_CANCELLED",
         timedOut
-          ? "The request timed out. Your draft has been kept."
-          : "The request was cancelled.",
+          ? "请求超时，当前内容已保留。"
+          : "请求已取消。",
         0,
       );
     }
     throw new ClientApiError(
       "NETWORK_UNAVAILABLE",
-      "The network is unavailable. Your draft has been kept.",
+      "网络不可用，当前内容已保留。",
       0,
     );
   } finally {
@@ -186,7 +182,7 @@ async function requestJson<T>(
 }
 
 function displayDate(value: string): string {
-  return new Intl.DateTimeFormat("en-AU", {
+  return new Intl.DateTimeFormat("zh-CN", {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -195,10 +191,7 @@ function displayDate(value: string): string {
 }
 
 function displayTime(value: string): string {
-  const [hourValue, minute] = value.split(":").map(Number);
-  const suffix = hourValue >= 12 ? "pm" : "am";
-  const hour = hourValue % 12 || 12;
-  return `${hour}:${String(minute).padStart(2, "0")} ${suffix}`;
+  return value.slice(0, 5);
 }
 
 function displayMoney(cents: number): string {
@@ -239,7 +232,7 @@ function WorkspaceLoading({ viewer }: { viewer: Viewer }) {
           ))}
         </div>
         <Skeleton className="h-72 rounded-2xl" />
-        <p className="sr-only" role="status">Loading today’s classes…</p>
+        <p className="sr-only" role="status">正在加载课程…</p>
       </div>
     </WorkspaceFrame>
   );
@@ -257,15 +250,15 @@ function WorkspaceFrame({
       <header className="sticky top-0 z-30 border-b border-[var(--navy-800)] bg-[var(--navy-950)] text-white">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-4 px-4 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
-            <Link href="/" className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--cyan-400)] text-[var(--navy-950)]" aria-label="Switch workspace">
+            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--cyan-400)] text-[var(--navy-950)]">
               <BookOpen className="size-[18px]" aria-hidden="true" />
-            </Link>
+            </span>
             <div className="min-w-0">
               <p className="truncate text-[15px] font-semibold tracking-tight">
                 Austin Education
               </p>
               <p className="truncate text-xs text-slate-300">
-                Teacher workspace
+                教师工作台
               </p>
             </div>
           </div>
@@ -274,21 +267,14 @@ function WorkspaceFrame({
               <p className="max-w-48 truncate text-sm font-medium">
                 {viewer.displayName}
               </p>
-              <p className="text-xs text-slate-300">Teacher</p>
+              <p className="text-xs text-slate-300">{viewer.email}</p>
             </div>
             <span className="grid size-9 place-items-center rounded-full border border-white/20 bg-white/10 text-sm font-semibold">
               {initials(viewer.displayName)}
             </span>
-            <Button
-              asChild
-              variant="ghost"
-              size="icon"
-              className="text-slate-300 hover:bg-white/10 hover:text-white"
-            >
-              <a href={viewer.signOutPath} target="_top" aria-label="Sign out">
-                <LogOut />
-              </a>
-            </Button>
+            <form action="/api/auth/logout" method="post">
+              <Button type="submit" variant="ghost" size="icon" className="text-slate-300 hover:bg-white/10 hover:text-white" aria-label="退出登录"><LogOut /></Button>
+            </form>
           </div>
         </div>
       </header>
@@ -408,7 +394,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
         setLoadError(
           error instanceof Error
             ? error.message
-            : "Today’s classes could not be loaded.",
+            : "课程加载失败。",
         );
         setLoadErrorCode(
           error instanceof ClientApiError ? error.code : "REQUEST_FAILED",
@@ -524,7 +510,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       signal?: AbortSignal,
     ) => {
       const session = data?.selectedSession;
-      if (!session) throw new Error("No class is selected.");
+      if (!session) throw new Error("尚未选择课程。");
       setSaving(true);
       setActionError(null);
       try {
@@ -545,13 +531,13 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
 
         if (result.pendingCreditCount > 0) {
           toast.warning(
-            `Class completed. ${result.pendingCreditCount} attendance charge requires admin review.`,
+            `课程已完成，${result.pendingCreditCount} 条课时记录等待运营处理。`,
           );
         } else {
           toast.success(
             result.idempotentReplay
-              ? "Class was already completed; no duplicate credits were charged."
-              : `Class completed and ${result.chargedCount} lesson credits recorded.`,
+              ? "课程已完成，未重复扣除课时。"
+              : `课程已完成，已记录 ${result.chargedCount} 条课时。`,
           );
         }
         window.sessionStorage.removeItem(`aus-draft:${session.id}`);
@@ -568,7 +554,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
             window.sessionStorage.removeItem(`aus-draft:${session.id}`);
             setDirty(false);
             toast.success(
-              "The response was interrupted, but the server confirms the class was completed safely.",
+              "课程已在服务器完成保存。",
             );
             return {
               sessionId: session.id,
@@ -589,7 +575,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
           }
         }
         const message =
-          error instanceof Error ? error.message : "The class could not be saved.";
+          error instanceof Error ? error.message : "课程保存失败。";
         setActionError(message);
         throw error;
       } finally {
@@ -603,7 +589,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
     if (!data?.selectedSession) return;
     if (unmarkedCount > 0) {
       setActionError(
-        `Mark every student before completing the class (${unmarkedCount} remaining).`,
+        `请先完成所有学生的点名（剩余 ${unmarkedCount} 人）。`,
       );
       setConfirmOpen(false);
       return;
@@ -612,7 +598,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       feedback &&
       (!feedback.summary.trim() || !feedback.guardianMessageDraft.trim())
     ) {
-      setActionError("The feedback summary and message draft cannot be empty.");
+      setActionError("课堂小结和家长消息不能为空。");
       setConfirmOpen(false);
       return;
     }
@@ -632,7 +618,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
     const session = data?.selectedSession;
     if (!session || classNotes.trim().length < 8) {
       setActionError(
-        "Add at least a short factual class note before drafting a family update.",
+        "请先填写课堂记录。",
       );
       return;
     }
@@ -662,9 +648,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       setFeedbackWarning(result.warning?.message ?? null);
       setDirty(true);
       if (result.source === "fallback") {
-        toast.info("AI was unavailable. An editable local draft was created.");
+        toast.info("已生成可编辑草稿。");
       } else {
-        toast.success("Editable family update drafted.");
+        toast.success("家长反馈草稿已生成。");
       }
     } catch (error) {
       if (
@@ -676,7 +662,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       setActionError(
         error instanceof Error
           ? error.message
-          : "A feedback draft could not be created.",
+          : "反馈草稿生成失败。",
       );
     } finally {
       if (intentSessionId.current === requestedSessionId) {
@@ -830,19 +816,13 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
         <div className="mx-auto max-w-xl px-5 py-20">
           <Alert variant="destructive">
             <AlertCircle />
-            <AlertTitle>Today’s workspace could not be loaded</AlertTitle>
+            <AlertTitle>教师工作台加载失败</AlertTitle>
             <AlertDescription>{loadError}</AlertDescription>
           </Alert>
           {loadErrorCode === "AUTH_REQUIRED" ? (
-            <Button asChild className="mt-5">
-              <a href="/signin-with-chatgpt?return_to=/" target="_top">
-                重新登录
-              </a>
-            </Button>
+            <Button className="mt-5" onClick={() => window.location.assign("/")}>重新登录</Button>
           ) : (
-            <Button className="mt-5" onClick={() => void loadWorkspace()}>
-              <RefreshCw /> Try again
-            </Button>
+            <Button className="mt-5" onClick={() => void loadWorkspace()}><RefreshCw />重试</Button>
           )}
         </div>
       </WorkspaceFrame>
@@ -858,26 +838,22 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
               <EmptyMedia variant="icon">
                 <CalendarOff />
               </EmptyMedia>
-              <EmptyTitle>No classes assigned today</EmptyTitle>
-              <EmptyDescription>
-                There is nothing to mark right now. This view uses Melbourne
-                dates and will update when a class is assigned.
-              </EmptyDescription>
+              <EmptyTitle>本周没有课程</EmptyTitle>
             </EmptyHeader>
             <EmptyContent>
               <Button variant="outline" onClick={() => void loadWorkspace()}>
-                <RefreshCw /> Refresh
+                <RefreshCw />刷新
               </Button>
             </EmptyContent>
           </Empty>
           {data ? (
             <div className="mt-5 rounded-2xl border border-border bg-white p-6">
-              <p className="text-sm font-semibold text-muted-foreground">Current payroll period</p>
+              <p className="text-sm font-semibold text-muted-foreground">本期薪资</p>
               <p className="mt-1 text-2xl font-semibold text-[var(--navy-950)]">
                 {displayMoney(data.payroll.currentAmountCents)}
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
-                {data.payroll.currentPeriod?.status ?? "No open period"} · {data.payroll.recentEntries.length} recent entries
+                {data.payroll.currentPeriod?.status === "paid" ? "已支付" : data.payroll.currentPeriod?.status === "approved" ? "已审批" : data.payroll.currentPeriod ? "待审批" : "暂无薪资周期"} · {data.payroll.recentEntries.length} 条记录
               </p>
             </div>
           ) : null}
@@ -896,7 +872,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       <div className="border-b border-border bg-white px-4 py-3 lg:hidden">
         <nav
           className="mx-auto flex max-w-[1040px] gap-2 overflow-x-auto pb-1"
-          aria-label="Today’s classes"
+          aria-label="本周课程"
         >
           {data.sessions.map((item) => (
             <Button
@@ -921,9 +897,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       <div className="mx-auto grid max-w-[1480px] lg:grid-cols-[252px_minmax(0,1fr)]">
         <aside className="hidden min-h-[calc(100vh-4rem)] border-r border-border bg-white px-4 py-6 lg:block">
           <p className="px-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-            Today · Melbourne
+            本周课程
           </p>
-          <nav className="mt-4 space-y-2" aria-label="Today’s classes">
+          <nav className="mt-4 space-y-2" aria-label="本周课程">
             {data.sessions.map((item) => (
               <button
                 key={item.id}
@@ -943,7 +919,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   {item.status === "completed" ? (
                     <Check
                       className="size-4 text-emerald-600"
-                      aria-label="Completed"
+                      aria-label="已完成"
                     />
                   ) : (
                     <ChevronRight
@@ -956,26 +932,32 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   {item.title}
                 </span>
                 <span className="mt-1 block text-xs text-muted-foreground">
-                  {item.room} · {item.rosterCount} students
+                  {item.room} · {item.rosterCount} 人
                 </span>
               </button>
             ))}
           </nav>
-
-          <div className="mt-8 rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <ShieldCheck className="size-4 text-[var(--cyan-700)]" />
-              Teacher access
-            </div>
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              You can record attendance only for sessions assigned to you.
-              Payment details and guardian contacts stay hidden.
-            </p>
-          </div>
         </aside>
 
         <section className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
           <div className="mx-auto max-w-[1040px]">
+            <div className="mb-8">
+              <h2 className="mb-3 text-lg font-semibold text-[var(--navy-950)]">本周课表</h2>
+              <WeekCalendar
+                anchorDate={data.today}
+                events={data.sessions.map((item) => ({
+                  id: item.id,
+                  date: item.date,
+                  startTime: item.startTime,
+                  endTime: item.endTime,
+                  title: item.title,
+                  room: item.room,
+                  status: item.status,
+                  kind: item.kind,
+                  participants: item.rosterCount,
+                }))}
+              />
+            </div>
             <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -987,16 +969,16 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     }
                   >
                     {completed
-                      ? "Completed"
+                      ? "已完成"
                       : cancelled
-                        ? "Cancelled"
+                        ? "已取消"
                       : session.timing === "active"
-                        ? "In progress"
+                        ? "进行中"
                         : session.timing === "upcoming"
-                          ? "Upcoming"
-                          : "Ready to finalise"}
+                          ? "待上课"
+                          : "待完成"}
                   </Badge>
-                  <Badge variant="outline">{session.kind}</Badge>
+                  <Badge variant="outline">{session.kind === "regular" ? "正式课" : session.kind === "trial" ? "试听课" : session.kind === "makeup" ? "补课" : "一对一"}</Badge>
                   <span className="text-sm text-muted-foreground">
                     {displayDate(session.date)}
                   </span>
@@ -1010,7 +992,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     {displayTime(session.startTime)}–{displayTime(session.endTime)}
                   </span>
                   <span>{session.room}</span>
-                  <span>Australia/Melbourne</span>
+                  <span>墨尔本时间</span>
                 </p>
               </div>
             </div>
@@ -1019,36 +1001,36 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
               <div className="summary-card">
                 <Users />
                 <div>
-                  <span>Roster</span>
-                  <strong>{data.roster.length} students</strong>
+                  <span>学生名单</span>
+                  <strong>{data.roster.length} 人</strong>
                 </div>
               </div>
               <div className="summary-card">
                 <WalletCards />
                 <div>
-                  <span>Current payroll</span>
+                  <span>本期薪资</span>
                   <strong>{displayMoney(data.payroll.currentAmountCents)}</strong>
                 </div>
               </div>
               <div className="summary-card">
                 <Coins />
                 <div>
-                  <span>{completed ? "Credits recorded" : "Credits on save"}</span>
+                  <span>{completed ? "已扣课时" : "预计扣课时"}</span>
                   <strong>
                     {completed
                       ? data.roster.filter(
                           (student) => student.billingStatus === "charged",
                         ).length
                       : billableCount}{" "}
-                    deductions
+                    人
                   </strong>
                 </div>
               </div>
               <div className="summary-card">
                 <AlertCircle />
                 <div>
-                  <span>Needs attention</span>
-                  <strong>{lowBalanceCount} low balances</strong>
+                  <span>低课时</span>
+                  <strong>{lowBalanceCount} 人</strong>
                 </div>
               </div>
             </div>
@@ -1056,15 +1038,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
             {lowBalanceCount > 0 && !completed && (
               <Alert className="mt-5 border-amber-200 bg-amber-50 text-amber-950">
                 <AlertCircle />
-                <AlertTitle>
-                  Check {lowBalanceCount} low{" "}
-                  {lowBalanceCount === 1 ? "balance" : "balances"}
-                </AlertTitle>
-                <AlertDescription>
-                  A present student with no available credit is still recorded
-                  truthfully and sent to the admin queue without a negative
-                  ledger balance.
-                </AlertDescription>
+                <AlertTitle>{lowBalanceCount} 名学生课时不足</AlertTitle>
               </Alert>
             )}
 
@@ -1075,34 +1049,26 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
               ) && (
                 <Alert className="mt-5 border-amber-200 bg-amber-50 text-amber-950">
                   <AlertCircle />
-                  <AlertTitle>Admin review required</AlertTitle>
-                  <AlertDescription>
-                    At least one attendance record could not be charged because
-                    the student had no lesson credit. Attendance is saved; the
-                    ledger was not overdrawn.
-                  </AlertDescription>
+                  <AlertTitle>存在待处理的课时记录</AlertTitle>
                 </Alert>
               )}
 
             {actionError && (
               <Alert variant="destructive" className="mt-5">
                 <AlertCircle />
-                <AlertTitle>Could not complete that action</AlertTitle>
+                <AlertTitle>操作失败</AlertTitle>
                 <AlertDescription>{actionError}</AlertDescription>
               </Alert>
             )}
 
             <div className="mt-8 flex items-end justify-between gap-4">
               <div>
-                <p className="section-kicker">Step 1 of 2</p>
+                <p className="section-kicker">课堂点名</p>
                 <h2 className="mt-1 text-xl font-semibold tracking-tight text-[var(--navy-950)]">
-                  Take attendance
+                  出勤记录
                 </h2>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-3">
-                <p className="hidden text-sm text-muted-foreground sm:block">
-                  Present and late enrolled students use one lesson credit; trial participants are free.
-                </p>
                 {!locked && (
                   <Button
                     type="button"
@@ -1118,7 +1084,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                       setDirty(true);
                     }}
                   >
-                    <Check /> Mark all present
+                    <Check />全部出勤
                   </Button>
                 )}
               </div>
@@ -1126,9 +1092,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
 
             <div className="mt-4 overflow-hidden rounded-2xl border border-border bg-white shadow-[0_10px_30px_rgb(18_37_58/5%)]">
               <div className="hidden grid-cols-[minmax(220px,1fr)_auto_140px] gap-4 border-b border-border bg-slate-50 px-5 py-3 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground md:grid">
-                <span>Student</span>
-                <span>Attendance</span>
-                <span className="text-right">Lesson balance</span>
+                <span>学生</span>
+                <span>出勤</span>
+                <span className="text-right">剩余课时</span>
               </div>
               <div className="divide-y divide-border">
                 {data.roster.map((student) => {
@@ -1167,15 +1133,15 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                                 variant="outline"
                                 className="border-violet-200 bg-violet-50 text-violet-700"
                               >
-                                New
+                                新生
                               </Badge>
                             )}
                             {student.billingPolicy === "trial_free" && (
-                              <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700">Trial · no credit</Badge>
+                              <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700">试听</Badge>
                             )}
                           </div>
                           <p className="mt-0.5 truncate text-sm text-muted-foreground">
-                            Age {student.age}
+                            {student.age} 岁
                           </p>
                         </div>
                       </div>
@@ -1183,7 +1149,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                       <div>
                         {status === null && (
                           <p className="mb-1 text-xs font-medium text-amber-700">
-                            Unmarked
+                            未点名
                           </p>
                         )}
                         <RadioGroup
@@ -1197,7 +1163,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                           setDirty(true);
                         }}
                         className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1"
-                        aria-label={`Attendance for ${student.name}`}
+                        aria-label={`${student.name}的出勤状态`}
                         >
                         {statusOptions.map((option) => (
                           <label
@@ -1225,7 +1191,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
 
                       <div className="flex items-center justify-between gap-3 md:block md:text-right">
                         <span className="text-sm text-muted-foreground md:hidden">
-                          Lesson balance
+                          剩余课时
                         </span>
                         <div>
                           <p
@@ -1237,12 +1203,12 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                           >
                             {nextBalance}{" "}
                             <span className="font-normal text-muted-foreground">
-                              credits
+                              课时
                             </span>
                           </p>
                           {pending && (
                             <p className="mt-0.5 text-xs font-medium text-amber-700">
-                              Admin review
+                              待运营处理
                             </p>
                           )}
                         </div>
@@ -1254,10 +1220,10 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
             </div>
 
             <div className="mt-8">
-              <p className="section-kicker">Step 2 of 2</p>
+              <p className="section-kicker">课堂记录</p>
               <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold tracking-tight text-[var(--navy-950)]">
-                  Add class notes
+                  课堂反馈
                 </h2>
                 <Button
                   variant="outline"
@@ -1276,20 +1242,16 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   ) : (
                     <Sparkles className="text-violet-600" />
                   )}
-                  {generating ? "Drafting…" : "Draft family update"}
+                  {generating ? "正在生成…" : "生成家长反馈"}
                 </Button>
               </div>
               <div className="mt-4 rounded-2xl border border-border bg-white p-4 shadow-[0_10px_30px_rgb(18_37_58/5%)] sm:p-5">
                 <label htmlFor="class-notes" className="text-sm font-semibold">
-                  Teacher notes{" "}
+                  课堂记录{" "}
                   <span className="font-normal text-muted-foreground">
-                    (optional)
+                    （选填）
                   </span>
                 </label>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Record only what happened in class. AI drafts remain editable
-                  and never control attendance or credit charging.
-                </p>
                 <Textarea
                   id="class-notes"
                   value={classNotes}
@@ -1300,19 +1262,14 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     if (feedback) {
                       setFeedback(null);
                       setFeedbackWarning(
-                        "The previous draft was cleared because the source note changed.",
+                        "课堂记录已修改，请重新生成反馈。",
                       );
                     }
                   }}
                   className="mt-3 min-h-28 resize-y"
                   maxLength={4_000}
-                  placeholder="e.g. Fractions review went well. The class needs more practice with mixed numbers…"
+                  placeholder="记录本节课的学习内容、课堂表现和后续建议"
                 />
-                <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-                  <MessageSquareText className="size-3.5" />
-                  Obvious email addresses and phone numbers are removed before
-                  a configured AI provider is called.
-                </div>
               </div>
             </div>
 
@@ -1326,17 +1283,17 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     id="feedback-heading"
                     className="font-semibold text-[var(--navy-950)]"
                   >
-                    Editable family update
+                    家长反馈草稿
                   </h3>
                   <Badge
                     variant="outline"
                     className="border-violet-200 bg-white text-violet-700"
                   >
                     {feedbackSource === "ai"
-                      ? "AI draft"
+                      ? "智能草稿"
                       : feedbackSource === "fallback"
-                        ? "Local fallback"
-                        : "Saved draft"}
+                        ? "本地草稿"
+                        : "已保存"}
                   </Badge>
                 </div>
                 {feedbackWarning && (
@@ -1350,7 +1307,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                       htmlFor="feedback-summary"
                       className="text-sm font-semibold"
                     >
-                      Summary
+                      课堂小结
                     </label>
                     <Textarea
                       id="feedback-summary"
@@ -1373,9 +1330,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                       htmlFor="feedback-strengths"
                       className="text-sm font-semibold"
                     >
-                      Strengths{" "}
+                      课堂亮点{" "}
                       <span className="font-normal text-muted-foreground">
-                        (one per line)
+                        （每行一条）
                       </span>
                     </label>
                     <Textarea
@@ -1401,9 +1358,9 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                       htmlFor="feedback-next"
                       className="text-sm font-semibold"
                     >
-                      Next steps{" "}
+                      后续建议{" "}
                       <span className="font-normal text-muted-foreground">
-                        (one per line)
+                        （每行一条）
                       </span>
                     </label>
                     <Textarea
@@ -1429,7 +1386,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                       htmlFor="feedback-message"
                       className="text-sm font-semibold"
                     >
-                      Message draft
+                      家长消息
                     </label>
                     <Textarea
                       id="feedback-message"
@@ -1451,10 +1408,6 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     />
                   </div>
                 </div>
-                <p className="mt-3 text-xs text-muted-foreground">
-                  This draft is saved with the class for human review. This
-                  slice never sends messages automatically.
-                </p>
               </section>
             )}
 
@@ -1464,32 +1417,31 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   {locked ? (
                     <>
                       {completed
-                        ? "Attendance and credit entries are locked. Corrections use an admin reversal rather than editing ledger history."
-                        : "This class was cancelled and cannot be completed."}
+                        ? "本课次已完成"
+                        : "本课次已取消"}
                     </>
                   ) : unmarkedCount > 0 ? (
                     <>
                       <strong className="text-amber-700">{unmarkedCount}</strong>{" "}
-                      {unmarkedCount === 1 ? "student remains" : "students remain"}{" "}
-                      unmarked.
+                      人尚未点名
                     </>
                   ) : potentialPendingCount > 0 ? (
                     <>
                       <strong className="text-amber-700">
                         {potentialPendingCount}
                       </strong>{" "}
-                      attendance charge will need admin review; the remaining{" "}
+                      人需要运营处理；其余{" "}
                       <strong className="text-foreground">
                         {billableCount - potentialPendingCount}
                       </strong>{" "}
-                      will be recorded.
+                      人将正常扣课时
                     </>
                   ) : (
                     <>
                       <strong className="text-foreground">
                         {billableCount}
                       </strong>{" "}
-                      lesson credits will be recorded in the immutable ledger.
+                      人将扣除课时
                     </>
                   )}
                 </p>
@@ -1507,16 +1459,16 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                 >
                   {saving ? <Spinner /> : <Check />}
                   {saving
-                    ? "Completing…"
+                    ? "正在完成…"
                     : completed
-                      ? "Class completed"
+                      ? "课程已完成"
                       : cancelled
-                        ? "Class cancelled"
+                        ? "课程已取消"
                         : unmarkedCount > 0
-                          ? `Mark ${unmarkedCount} remaining`
+                          ? `还有 ${unmarkedCount} 人未点名`
                       : session.timing === "upcoming"
-                        ? "Class has not started"
-                        : "Complete class"}
+                        ? "课程尚未开始"
+                        : "完成课程"}
                 </Button>
               </div>
             </div>
@@ -1527,27 +1479,24 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Complete this class?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This writes immutable attendance and lesson-credit records. Teacher
-              corrections require an audited admin workflow.
-            </AlertDialogDescription>
+            <AlertDialogTitle>确认完成课程？</AlertDialogTitle>
+            <AlertDialogDescription>请确认出勤记录和课堂反馈无误。</AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid grid-cols-2 gap-3 rounded-lg bg-slate-50 p-4 text-sm sm:grid-cols-4">
-            <div><span className="text-muted-foreground">Billable present / late</span><strong className="block text-lg">{billableCount}</strong></div>
-            <div><span className="text-muted-foreground">Absent</span><strong className="block text-lg">{absentCount}</strong></div>
-            <div><span className="text-muted-foreground">Credits charged</span><strong className="block text-lg">{billableCount - potentialPendingCount}</strong></div>
-            <div><span className="text-muted-foreground">Admin review</span><strong className="block text-lg text-amber-700">{potentialPendingCount}</strong></div>
+            <div><span className="text-muted-foreground">出勤／迟到</span><strong className="block text-lg">{billableCount}</strong></div>
+            <div><span className="text-muted-foreground">缺席</span><strong className="block text-lg">{absentCount}</strong></div>
+            <div><span className="text-muted-foreground">正常扣课时</span><strong className="block text-lg">{billableCount - potentialPendingCount}</strong></div>
+            <div><span className="text-muted-foreground">待运营处理</span><strong className="block text-lg text-amber-700">{potentialPendingCount}</strong></div>
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel>Review attendance</AlertDialogCancel>
+            <AlertDialogCancel>返回检查</AlertDialogCancel>
             <AlertDialogAction
               onClick={(event) => {
                 event.preventDefault();
                 void completeVisibleClass();
               }}
             >
-              Confirm and complete
+              确认完成
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1556,16 +1505,13 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       <AlertDialog open={switchOpen} onOpenChange={setSwitchOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Discard this class draft?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Attendance, notes, and feedback changes have not been submitted.
-              Stay here to keep editing, or discard them and switch classes.
-            </AlertDialogDescription>
+            <AlertDialogTitle>放弃当前修改？</AlertDialogTitle>
+            <AlertDialogDescription>未保存的点名和课堂反馈将会丢失。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogCancel>继续编辑</AlertDialogCancel>
             <AlertDialogAction onClick={discardAndSwitch}>
-              Discard and switch
+              放弃并切换
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

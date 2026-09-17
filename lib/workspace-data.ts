@@ -7,6 +7,7 @@ import {
   feedbackDraftSchema,
   melbourneDate,
   melbourneTime,
+  weekRangeForDate,
 } from "@/lib/domain";
 import type { StaffUser } from "@/lib/server-auth";
 import type {
@@ -94,6 +95,7 @@ export async function loadTeacherWorkspace(
 
   const db = getD1();
   const today = melbourneDate(now);
+  const week = weekRangeForDate(today);
   const [sessionResult, payrollPeriod, payrollEntries] = await Promise.all([
     db.prepare(
       `SELECT
@@ -114,13 +116,13 @@ export async function loadTeacherWorkspace(
         ON participant.lesson_session_id = ls.id
         AND participant.removed_at IS NULL
        WHERE ls.teacher_id = ?
-        AND ls.session_date = ?
+        AND ls.session_date BETWEEN ? AND ?
        GROUP BY
         ls.id, cs.name, cs.subject, cs.room, ls.session_date,
         ls.local_start_time, ls.local_end_time, ls.status,ls.session_kind,ls.version
-       ORDER BY ls.local_start_time`,
+       ORDER BY ls.session_date,ls.local_start_time`,
     )
-    .bind(staff.id, today)
+    .bind(staff.id, week.startsOn, week.endsOn)
     .all<SessionRow>(),
     db.prepare(
       `SELECT period.id,period.starts_on AS startsOn,period.ends_on AS endsOn,

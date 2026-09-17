@@ -1,12 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import {
   AlertCircle,
-  ArrowLeftRight,
   BookOpen,
   CheckCircle2,
+  Eye,
   LogOut,
   MessageCircleQuestion,
   Play,
@@ -41,13 +40,22 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { WeekCalendar, type WeekCalendarEvent } from "@/components/week-calendar";
 import type { PlatformRole } from "@/lib/account-auth";
 import type { PlatformCommandInput } from "@/lib/domain";
 import type { PlatformCommandResult } from "@/lib/platform-commands";
 import type { OverviewSection, PlatformOverview } from "@/lib/platform-overview";
 import type { FaqTriageResult } from "@/lib/types";
+import type { StudentDetail } from "@/lib/student-detail";
 
-type Viewer = { displayName: string; email: string; signOutPath: string };
+type Viewer = { displayName: string; email: string };
 type Row = Record<string, string | number | null>;
 
 const roleLabels: Record<PlatformRole, string> = {
@@ -56,14 +64,167 @@ const roleLabels: Record<PlatformRole, string> = {
   manager_admin: "主管",
   student: "学生",
   guardian: "家长",
-  system_admin: "系统管理员",
+  system_admin: "系统管理",
 };
+
+const fieldLabels: Record<string, string> = {
+  student: "学生",
+  legalName: "姓名",
+  preferredName: "常用名",
+  dateOfBirth: "出生日期",
+  status: "状态",
+  owner: "负责人",
+  credits: "剩余课时",
+  risk: "续费状态",
+  source: "来源",
+  nextFollowUpAt: "下次跟进",
+  queueType: "事项",
+  outcome: "试听结果",
+  decision: "报名意向",
+  trialDate: "试听日期",
+  dueAt: "截止时间",
+  sessionDate: "上课日期",
+  startTime: "开始",
+  endTime: "结束",
+  className: "班级",
+  subject: "科目",
+  teacher: "老师",
+  room: "教室",
+  participants: "人数",
+  sessionStatus: "课程状态",
+  capacity: "容量",
+  orderType: "订单类型",
+  startsOn: "开始日期",
+  endsOn: "结束日期",
+  firstStart: "课程一开始",
+  firstEnd: "课程一结束",
+  secondStart: "课程二开始",
+  secondEnd: "课程二结束",
+  title: "主题",
+  jobType: "任务类型",
+  startedAt: "启动时间",
+  finishedAt: "完成时间",
+  eventType: "事件类型",
+  aggregateType: "对象类型",
+  lastCheckedAt: "最近检查",
+  taskType: "任务",
+  faqCategory: "问题类型",
+  question: "问题",
+  admin: "运营",
+  email: "邮箱",
+  name: "姓名",
+  relationship: "关系",
+  isPrimary: "主要联系人",
+  weekday: "星期",
+  amountCents: "金额",
+  description: "内容",
+  createdAt: "创建时间",
+  paidAt: "支付时间",
+  kind: "类型",
+  type: "类型",
+  mode: "模式",
+  provider: "服务商",
+  attempts: "尝试次数",
+  lastError: "最近错误",
+  startsAt: "开始时间",
+  expiresAt: "到期时间",
+  reason: "原因",
+  billingStatus: "课时状态",
+  feedback: "课堂反馈",
+  channel: "渠道",
+  subjectLine: "主题",
+  body: "内容",
+  sentAt: "发送时间",
+};
+
+const valueLabels: Record<string, string> = {
+  active: "正常",
+  inactive: "停用",
+  paused: "暂停",
+  prospect: "意向学生",
+  scheduled: "待上课",
+  completed: "已完成",
+  cancelled: "已取消",
+  pending: "待处理",
+  paid: "已支付",
+  succeeded: "成功",
+  failed: "失败",
+  queued: "待发送",
+  sent: "已发送",
+  processing: "处理中",
+  open: "待处理",
+  approved: "已批准",
+  rejected: "已拒绝",
+  requested: "待审批",
+  present: "出勤",
+  late: "迟到",
+  absent: "缺席",
+  regular: "正式课",
+  trial: "试听课",
+  makeup: "补课",
+  private: "一对一",
+  urgent: "紧急续费",
+  renew_soon: "即将续费",
+  new: "新咨询",
+  contacted: "已联系",
+  trial_scheduled: "已排试听",
+  trial_completed: "试听完成",
+  won: "已报名",
+  lost: "已流失",
+  attended: "已参加",
+  no_show: "未到课",
+  enrol: "报名",
+  nurture: "继续跟进",
+  no_enrol: "暂不报名",
+  operations: "运营",
+  billing: "财务",
+  teaching: "教学",
+  technical: "技术",
+  healthy: "正常",
+  degraded: "异常",
+  unknown: "未知",
+  live: "正式",
+  sandbox: "测试",
+  disabled: "停用",
+  teacher: "老师",
+  room: "教室",
+  class: "班级",
+  credit_top_up: "课时续费",
+  true: "是",
+  false: "否",
+};
+
+const hiddenTableFields = new Set([
+  "id",
+  "studentId",
+  "inquiryId",
+  "trialBookingId",
+  "sessionId",
+  "orderId",
+  "firstSession",
+  "secondSession",
+]);
 
 class ClientApiError extends Error {
   constructor(public code: string, message: string) {
     super(message);
   }
 }
+
+const errorMessages: Record<string, string> = {
+  AUTH_REQUIRED: "登录已失效，请重新登录。",
+  ROLE_FORBIDDEN: "当前账号无权执行此操作。",
+  STUDENT_SCOPE_FORBIDDEN: "该学生不属于当前账号的管理范围。",
+  INQUIRY_SCOPE_FORBIDDEN: "该咨询不属于当前账号的管理范围。",
+  TEACHER_SCHEDULE_CONFLICT: "老师在该时段已有课程。",
+  ROOM_SCHEDULE_CONFLICT: "教室在该时段已被占用。",
+  STUDENT_SCHEDULE_CONFLICT: "学生在该时段已有课程。",
+  CLASS_AT_CAPACITY: "目标班级已满员。",
+  PAYMENT_EVENT_REUSED: "该支付记录已用于其他订单。",
+  REQUEST_TIMEOUT: "请求超时，请稍后重试。",
+  NETWORK_UNAVAILABLE: "网络暂时不可用。",
+  DATABASE_UNAVAILABLE: "数据服务暂时不可用。",
+};
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
@@ -81,7 +242,8 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     const payload = text ? (JSON.parse(text) as T | { error?: { code?: string; message?: string } }) : null;
     if (!response.ok) {
       const body = payload as { error?: { code?: string; message?: string } } | null;
-      throw new ClientApiError(body?.error?.code ?? "REQUEST_FAILED", body?.error?.message ?? "请求失败。");
+      const code = body?.error?.code ?? "REQUEST_FAILED";
+      throw new ClientApiError(code, errorMessages[code] ?? body?.error?.message ?? "请求失败。");
     }
     if (!payload) throw new ClientApiError("EMPTY_RESPONSE", "服务器返回了空响应。");
     return payload as T;
@@ -95,7 +257,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function displayKey(value: string): string {
-  return value
+  return fieldLabels[value] ?? value
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/^./, (letter) => letter.toUpperCase());
 }
@@ -105,9 +267,11 @@ function displayValue(key: string, value: string | number | null): React.ReactNo
   if (/amountCents$/i.test(key) && typeof value === "number") {
     return new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(value / 100);
   }
-  if (key === "status" || key === "kind" || key === "type" || key === "mode") {
-    return <Badge variant="outline" className="font-normal">{String(value).replaceAll("_", " ")}</Badge>;
+  if (key === "status" || key === "kind" || key === "type" || key === "mode" || key === "risk" || key === "outcome" || key === "decision" || key === "billingStatus") {
+    return <Badge variant="outline" className="font-normal">{valueLabels[String(value)] ?? String(value).replaceAll("_", " ")}</Badge>;
   }
+  if (key === "isPrimary") return valueLabels[String(Boolean(value))];
+  if (key === "weekday" && typeof value === "number") return ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][value] ?? value;
   if (/At$/.test(key) && typeof value === "string") {
     const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
       ? `${value.replace(" ", "T")}Z`
@@ -126,14 +290,16 @@ function displayValue(key: string, value: string | number | null): React.ReactNo
     }
   }
   const text = String(value);
-  return <span title={text} className="block max-w-72 truncate">{text}</span>;
+  return <span title={text} className="block max-w-72 truncate">{valueLabels[text] ?? text}</span>;
 }
 
 function DataTable({ rows }: { rows: Row[] }) {
   const columns = useMemo(() => {
     const keys: string[] = [];
     for (const row of rows) {
-      for (const key of Object.keys(row)) if (!keys.includes(key)) keys.push(key);
+      for (const key of Object.keys(row)) {
+        if (!hiddenTableFields.has(key) && !keys.includes(key)) keys.push(key);
+      }
     }
     return keys.slice(0, 9);
   }, [rows]);
@@ -158,7 +324,7 @@ function DataTable({ rows }: { rows: Row[] }) {
   );
 }
 
-function StudentDirectoryControls({
+function StudentDirectory({
   section,
   query,
   ownedStudents,
@@ -166,6 +332,7 @@ function StudentDirectoryControls({
   onQueryChange,
   onSearch,
   onPageChange,
+  onView,
 }: {
   section: OverviewSection;
   query: string;
@@ -174,52 +341,107 @@ function StudentDirectoryControls({
   onQueryChange: (value: string) => void;
   onSearch: (query: string) => void;
   onPageChange: (page: number) => void;
+  onView: (studentId: string) => void;
 }) {
   const page = section.page ?? 1;
   const pageSize = section.pageSize ?? 25;
   const total = section.totalRows ?? section.rows.length;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   return (
-    <div className="mb-4 space-y-3 rounded-xl border bg-white p-4">
-      <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
-        <span><strong>{ownedStudents.toLocaleString("en-AU")}</strong> 名下学生</span>
-        <span><strong>{organizationStudents.toLocaleString("en-AU")}</strong> 全机构学生</span>
-      </div>
-      <form
-        className="flex flex-col gap-2 sm:flex-row"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSearch(query);
-        }}
-      >
-        <Input
-          aria-label="搜索学生"
-          maxLength={80}
-          placeholder="按学生姓名、ID 或负责人搜索"
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-        />
-        <Button type="submit">搜索</Button>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={!query}
-          onClick={() => {
-            onQueryChange("");
-            onSearch("");
-          }}
-        >
-          清除
-        </Button>
-      </form>
-      <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-        <span>匹配 {total.toLocaleString("en-AU")} 人 · 第 {page} / {pageCount} 页</span>
-        <div className="flex gap-2">
-          <Button type="button" size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>上一页</Button>
-          <Button type="button" size="sm" variant="outline" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)}>下一页</Button>
+    <div className="space-y-3">
+      <div className="space-y-3 rounded-xl border bg-white p-4">
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
+          <span><strong>{ownedStudents.toLocaleString("zh-CN")}</strong> 名下学生</span>
+          <span><strong>{organizationStudents.toLocaleString("zh-CN")}</strong> 全机构学生</span>
+        </div>
+        <form className="flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); onSearch(query); }}>
+          <Input aria-label="搜索学生" maxLength={80} placeholder="搜索姓名、学生编号或负责人" value={query} onChange={(event) => onQueryChange(event.target.value)} />
+          <Button type="submit">搜索</Button>
+          <Button type="button" variant="outline" disabled={!query} onClick={() => { onQueryChange(""); onSearch(""); }}>清除</Button>
+        </form>
+        <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+          <span>共 {total.toLocaleString("zh-CN")} 人 · 第 {page} / {pageCount} 页</span>
+          <div className="flex gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>上一页</Button>
+            <Button type="button" size="sm" variant="outline" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)}>下一页</Button>
+          </div>
         </div>
       </div>
+      <div className="rounded-xl border bg-white">
+        <Table>
+          <TableHeader><TableRow><TableHead>学生</TableHead><TableHead>状态</TableHead><TableHead>负责人</TableHead><TableHead>剩余课时</TableHead><TableHead className="w-24" /></TableRow></TableHeader>
+          <TableBody>
+            {section.rows.map((row) => (
+              <TableRow key={String(row.id)}>
+                <TableCell><p className="font-medium">{String(row.student)}</p><p className="text-xs text-muted-foreground">{String(row.id)}</p></TableCell>
+                <TableCell>{displayValue("status", row.status ?? null)}</TableCell>
+                <TableCell>{displayValue("owner", row.owner ?? null)}</TableCell>
+                <TableCell>{displayValue("credits", row.credits ?? null)}</TableCell>
+                <TableCell><Button type="button" size="sm" variant="ghost" onClick={() => onView(String(row.id))}><Eye />查看</Button></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
     </div>
+  );
+}
+
+function scheduleEvents(rows: Row[]): WeekCalendarEvent[] {
+  return rows.map((row, index) => ({
+    id: String(row.id ?? `${row.sessionDate ?? "date"}-${index}`),
+    date: String(row.sessionDate ?? ""),
+    startTime: String(row.startTime ?? "00:00"),
+    endTime: String(row.endTime ?? row.startTime ?? "00:00"),
+    title: String(row.className ?? "课程"),
+    teacher: row.teacher === null || row.teacher === undefined ? null : String(row.teacher),
+    room: row.room === null || row.room === undefined ? null : String(row.room),
+    status: row.status === null || row.status === undefined ? null : String(row.status),
+    kind: row.kind === null || row.kind === undefined ? null : String(row.kind),
+    participants: typeof row.participants === "number" ? row.participants : null,
+  }));
+}
+
+function StudentDetailSheet({
+  open,
+  onOpenChange,
+  detail,
+  loading,
+  error,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  detail: StudentDetail | null;
+  loading: boolean;
+  error: string;
+}) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">
+        <SheetHeader className="border-b">
+          <SheetTitle>{detail ? String(detail.student.preferredName ?? detail.student.legalName) : "学生详情"}</SheetTitle>
+          <SheetDescription>{detail ? `${String(detail.student.id)} · ${valueLabels[String(detail.student.status)] ?? String(detail.student.status)}` : ""}</SheetDescription>
+        </SheetHeader>
+        <div className="space-y-6 px-4 pb-8">
+          {loading ? <div className="space-y-3"><Skeleton className="h-24" /><Skeleton className="h-72" /></div> : null}
+          {error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>加载失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
+          {detail && !loading ? (
+            <>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Card><CardHeader className="pb-3"><CardDescription>负责人</CardDescription><CardTitle className="text-lg">{String(detail.student.owner ?? "—")}</CardTitle></CardHeader></Card>
+                <Card><CardHeader className="pb-3"><CardDescription>剩余课时</CardDescription><CardTitle className="text-lg">{Number(detail.student.credits).toLocaleString("zh-CN")}</CardTitle></CardHeader></Card>
+                <Card><CardHeader className="pb-3"><CardDescription>出生日期</CardDescription><CardTitle className="text-lg">{String(detail.student.dateOfBirth)}</CardTitle></CardHeader></Card>
+              </div>
+              <section><h3 className="mb-3 text-base font-semibold">本周课表</h3><WeekCalendar events={scheduleEvents(detail.schedule)} anchorDate={detail.week.startsOn} /></section>
+              <section><h3 className="mb-3 text-base font-semibold">班级与老师</h3><DataTable rows={detail.enrollments} /></section>
+              <section><h3 className="mb-3 text-base font-semibold">家长信息</h3><DataTable rows={detail.guardians} /></section>
+              <section><h3 className="mb-3 text-base font-semibold">近期出勤</h3><DataTable rows={detail.attendance} /></section>
+              <section><h3 className="mb-3 text-base font-semibold">课时订单</h3><DataTable rows={detail.orders} /></section>
+            </>
+          ) : null}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -253,12 +475,12 @@ function OperationsActions({ data, run, busy }: {
   const room = resources.find((row) => row.type === "room");
   const targetClass = resources.find((row) => row.type === "class");
   const [mode, setMode] = useState("create");
-  const [studentName, setStudentName] = useState("Avery Demo");
+  const [studentName, setStudentName] = useState("王晨");
   const [birthDate, setBirthDate] = useState("2015-04-12");
-  const [guardianName, setGuardianName] = useState("Morgan Demo");
-  const [guardianEmail, setGuardianEmail] = useState("morgan.demo@example.test");
+  const [guardianName, setGuardianName] = useState("王女士");
+  const [guardianEmail, setGuardianEmail] = useState("guardian@example.test");
   const [guardianPhone, setGuardianPhone] = useState("0400 000 088");
-  const [source, setSource] = useState("Website");
+  const [source, setSource] = useState("官网");
   const [inquiryId, setInquiryId] = useState(String(inquiryRows.find((row) => row.status === "new")?.id ?? inquiryRows[0]?.id ?? ""));
   const [teacherId, setTeacherId] = useState(String(teacher?.id ?? ""));
   const [roomName, setRoomName] = useState(String(room?.name ?? ""));
@@ -293,8 +515,7 @@ function OperationsActions({ data, run, busy }: {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>运营动作</CardTitle>
-        <CardDescription>写操作同时执行对象授权、状态机和冲突检查。</CardDescription>
+        <CardTitle>运营操作</CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
         <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted p-1">
@@ -309,40 +530,37 @@ function OperationsActions({ data, run, busy }: {
             <>
               <Field label="学生姓名" value={studentName} onChange={setStudentName} />
               <Field label="出生日期" value={birthDate} onChange={setBirthDate} type="date" />
-              <Field label="监护人" value={guardianName} onChange={setGuardianName} />
+              <Field label="家长姓名" value={guardianName} onChange={setGuardianName} />
               <Field label="邮箱" value={guardianEmail} onChange={setGuardianEmail} type="email" />
               <Field label="电话" value={guardianPhone} onChange={setGuardianPhone} />
               <Field label="来源" value={source} onChange={setSource} />
             </>
           ) : mode === "trial" ? (
             <>
-              <Field label="咨询 ID" value={inquiryId} onChange={setInquiryId} />
-              <Field label="老师 ID" value={teacherId} onChange={setTeacherId} />
+              <Field label="咨询编号" value={inquiryId} onChange={setInquiryId} />
+              <Field label="老师编号" value={teacherId} onChange={setTeacherId} />
               <Field label="教室" value={roomName} onChange={setRoomName} />
               <Field label="日期" value={trialDate} onChange={setTrialDate} type="date" />
             </>
           ) : mode === "outcome" ? (
             <>
-              <Field label="试听 Booking ID" value={trialBookingId} onChange={setTrialBookingId} />
-              <p className="text-xs leading-5 text-muted-foreground">出勤必须先由老师完成；这里记录招生结论，不代替课堂点名。</p>
+              <Field label="试听编号" value={trialBookingId} onChange={setTrialBookingId} />
             </>
           ) : mode === "convert" ? (
             <>
-              <Field label="已完成试听的咨询 ID" value={conversionInquiryId} onChange={setConversionInquiryId} />
-              <Field label="目标班级 ID" value={classSeriesId} onChange={setClassSeriesId} />
-              <p className="text-xs leading-5 text-muted-foreground">转化会原子创建报名和首期待付订单。</p>
+              <Field label="咨询编号" value={conversionInquiryId} onChange={setConversionInquiryId} />
+              <Field label="班级编号" value={classSeriesId} onChange={setClassSeriesId} />
             </>
           ) : (
             <>
-              <Field label="低课时学生 ID" value={renewalStudentId} onChange={setRenewalStudentId} />
+              <Field label="学生编号" value={renewalStudentId} onChange={setRenewalStudentId} />
               <Field label="续费课时" value={renewalCredits} onChange={setRenewalCredits} type="number" />
               <Field label="金额（AUD）" value={renewalAmount} onChange={setRenewalAmount} type="number" />
-              <p className="text-xs leading-5 text-muted-foreground">运营只代建待支付订单，不会替家长自动扣款。</p>
             </>
           )}
           <Button className="w-full" disabled={busy} type="submit">
             {busy ? <RefreshCw className="animate-spin" /> : <Play />}
-            {mode === "create" ? "创建咨询与跟进" : mode === "trial" ? "校验冲突并排课" : mode === "outcome" ? "记录试听结果" : mode === "convert" ? "转化并创建订单" : "创建待支付续费订单"}
+            {mode === "create" ? "创建咨询" : mode === "trial" ? "安排试听" : mode === "outcome" ? "保存试听结果" : mode === "convert" ? "办理报名" : "创建续费订单"}
           </Button>
         </form>
         {trialAttentionRows.find((row) => row.queueType === "trial_follow_up") || taskRows[0] ? (
@@ -373,7 +591,7 @@ function ManagerActions({ data, run, busy }: {
   const support = data.sections.find((section) => section.id === "support")?.rows.find((row) => row.status === "requested");
   return (
     <Card>
-      <CardHeader><CardTitle>审批队列</CardTitle><CardDescription>高风险动作要求独立角色，并保留不可变审计。</CardDescription></CardHeader>
+      <CardHeader><CardTitle>审批队列</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <Button className="w-full justify-start" disabled={busy || !refund} onClick={() => refund && run({ action: "approve_refund", refundId: String(refund.id), approve: true, note: "Reviewed: unused package may be refunded" })}>
           <WalletCards />批准首条待处理退款
@@ -384,7 +602,7 @@ function ManagerActions({ data, run, busy }: {
         <Button variant="outline" className="w-full justify-start" disabled={busy || !support} onClick={() => support && run({ action: "approve_support_session", supportSessionId: String(support.id), minutes: 30 })}>
           <ShieldAlert />批准独立的限时支持
         </Button>
-        {!support ? <p className="text-xs leading-5 text-muted-foreground">没有待审批的技术支持申请。系统管理员不能审批自己的申请。</p> : null}
+        {!support ? <p className="text-sm text-muted-foreground">暂无待审批的支持申请</p> : null}
       </CardContent>
     </Card>
   );
@@ -422,7 +640,7 @@ function PortalActions({ data, run, busy, role }: {
       const next = caught instanceof ClientApiError
         ? caught
         : new ClientApiError("FAQ_FAILED", "问题暂时无法处理。");
-      toast.error(`${next.message} (${next.code})`);
+      toast.error(next.message);
     } finally {
       setFaqBusy(false);
     }
@@ -430,7 +648,7 @@ function PortalActions({ data, run, busy, role }: {
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader><CardTitle>课时与续费</CardTitle><CardDescription>付款成功后才增加课时；重复回调不会重复入账。</CardDescription></CardHeader>
+        <CardHeader><CardTitle>课时与续费</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <Field label="购买课时" value={credits} onChange={setCredits} type="number" />
           <Field label="金额（AUD）" value={amount} onChange={setAmount} type="number" />
@@ -438,14 +656,13 @@ function PortalActions({ data, run, busy, role }: {
             <WalletCards />创建续费订单
           </Button>
           <Button variant="outline" className="w-full" disabled={busy || !pending} onClick={() => pending && run({ action: "sandbox_pay_order", orderId: String(pending.id), providerEventId: `portal_${crypto.randomUUID().replaceAll("-", "")}` })}>
-            <Send />沙盒支付最早待付订单
+            <Send />支付待付订单
           </Button>
         </CardContent>
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>FAQ 智能分流</CardTitle>
-          <CardDescription>只回答机构批准的基础 FAQ；涉及个人课表、退款、支付争议或安全问题会直接转人工。</CardDescription>
+          <CardTitle>帮助中心</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
@@ -464,7 +681,7 @@ function PortalActions({ data, run, busy, role }: {
             onClick={() => void askFaq()}
           >
             {faqBusy ? <RefreshCw className="animate-spin" /> : <MessageCircleQuestion />}
-            {faqBusy ? "判断中…" : "查询 FAQ 或转人工"}
+            {faqBusy ? "正在提交…" : "提交问题"}
           </Button>
           {faqResult ? (
             <Alert className={faqResult.status === "escalated" ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}>
@@ -486,27 +703,26 @@ function SystemActions({ run, busy }: {
   run: (command: PlatformCommandInput) => Promise<void>;
   busy: boolean;
 }) {
-  const [reason, setReason] = useState("Investigate failed background delivery without exposing unmasked business data");
+  const [reason, setReason] = useState("检查后台任务异常");
   return (
     <Card>
-      <CardHeader><CardTitle>技术操作</CardTitle><CardDescription>默认只有诊断与技术队列权限；业务写入不随系统角色自动开放。</CardDescription></CardHeader>
+      <CardHeader><CardTitle>系统运维</CardTitle></CardHeader>
       <CardContent className="space-y-4">
         <Button className="w-full" disabled={busy} onClick={() => run({ action: "process_outbox", limit: 20 })}>
-          <RefreshCw />运行一次沙盒 outbox worker
+          <RefreshCw />处理待发送任务
         </Button>
         <div className="space-y-2"><Label>紧急支持原因</Label><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></div>
         <Button variant="outline" className="w-full" disabled={busy} onClick={() => run({ action: "request_support_session", reason, scope: ["diagnostics.read", "jobs.retry", "business.masked_read"], minutes: 30 })}>
-          <ShieldAlert />申请 30 分钟限时支持
+          <ShieldAlert />申请临时支持
         </Button>
       </CardContent>
     </Card>
   );
 }
 
-export function PlatformWorkspace({ role, viewer, availableRoles }: {
+export function PlatformWorkspace({ role, viewer }: {
   role: Exclude<PlatformRole, "teacher">;
   viewer: Viewer;
-  availableRoles: PlatformRole[];
 }) {
   const [data, setData] = useState<PlatformOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -514,6 +730,10 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
   const [error, setError] = useState<{ code: string; message: string } | null>(null);
   const [activeSection, setActiveSection] = useState<string>();
   const [studentSearch, setStudentSearch] = useState("");
+  const [studentDetailOpen, setStudentDetailOpen] = useState(false);
+  const [studentDetail, setStudentDetail] = useState<StudentDetail | null>(null);
+  const [studentDetailLoading, setStudentDetailLoading] = useState(false);
+  const [studentDetailError, setStudentDetailError] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -557,7 +777,7 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
       await load();
     } catch (caught) {
       const next = caught instanceof ClientApiError ? caught : new ClientApiError("ACTION_FAILED", "操作失败。");
-      toast.error(`${next.message} (${next.code})`);
+      toast.error(next.message);
     } finally {
       setBusy(false);
     }
@@ -582,17 +802,35 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
     void load();
   };
 
+  const openStudentDetail = async (studentId: string) => {
+    setStudentDetailOpen(true);
+    setStudentDetail(null);
+    setStudentDetailError("");
+    setStudentDetailLoading(true);
+    try {
+      setStudentDetail(
+        await requestJson<StudentDetail>(
+          `/api/platform/students/${encodeURIComponent(studentId)}`,
+        ),
+      );
+    } catch (caught) {
+      const next = caught instanceof ClientApiError
+        ? caught
+        : new ClientApiError("STUDENT_LOAD_FAILED", "学生信息加载失败。");
+      setStudentDetailError(next.message);
+    } finally {
+      setStudentDetailLoading(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-[var(--canvas)] text-foreground">
       <header className="sticky top-0 z-30 border-b border-[var(--navy-800)] bg-[var(--navy-950)] text-white">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center gap-3 px-4 sm:px-6 lg:px-8">
-          <Link href="/" className="grid size-9 place-items-center rounded-lg bg-[var(--cyan-400)] text-[var(--navy-950)]" aria-label="Role launcher"><BookOpen className="size-[18px]" /></Link>
+          <span className="grid size-9 place-items-center rounded-lg bg-[var(--cyan-400)] text-[var(--navy-950)]"><BookOpen className="size-[18px]" /></span>
           <div><p className="text-sm font-semibold">Austin Education</p><p className="text-xs text-slate-300">{roleLabels[role]}工作台</p></div>
-          <nav className="ml-auto hidden items-center gap-1 lg:flex" aria-label="Switch workspace">
-            {availableRoles.map((item) => <Link key={item} href={`/workspace/${item}`} className={`rounded-md px-3 py-2 text-xs ${item === role ? "bg-white/15 text-white" : "text-slate-300 hover:bg-white/10"}`}>{roleLabels[item]}</Link>)}
-          </nav>
-          <div className="ml-auto hidden text-right sm:block lg:ml-3"><p className="max-w-40 truncate text-sm font-medium">{viewer.displayName}</p><p className="text-xs text-slate-300">{roleLabels[role]}</p></div>
-          <Button asChild variant="ghost" size="icon" className="text-slate-300 hover:bg-white/10 hover:text-white"><a href={viewer.signOutPath} target="_top" aria-label="Sign out"><LogOut /></a></Button>
+          <div className="ml-auto hidden text-right sm:block"><p className="max-w-48 truncate text-sm font-medium">{viewer.displayName}</p><p className="text-xs text-slate-300">{viewer.email}</p></div>
+          <form action="/api/auth/logout" method="post"><Button type="submit" variant="ghost" size="icon" className="text-slate-300 hover:bg-white/10 hover:text-white" aria-label="退出登录"><LogOut /></Button></form>
         </div>
       </header>
 
@@ -600,14 +838,13 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
         {loading ? (
           <div className="space-y-5"><Skeleton className="h-10 w-72" /><div className="grid gap-3 sm:grid-cols-4">{[0,1,2,3].map((item) => <Skeleton key={item} className="h-24 rounded-xl" />)}</div><Skeleton className="h-96 rounded-2xl" /></div>
         ) : error ? (
-          <Alert variant="destructive"><AlertCircle /><AlertTitle>{error.code}</AlertTitle><AlertDescription>{error.message}<Button variant="outline" size="sm" className="ml-3" onClick={() => void load()}>重试</Button></AlertDescription></Alert>
+          <Alert variant="destructive"><AlertCircle /><AlertTitle>加载失败</AlertTitle><AlertDescription>{error.message}<Button variant="outline" size="sm" className="ml-3" onClick={() => void load()}>重试</Button></AlertDescription></Alert>
         ) : data ? (
           <>
             <div className="flex flex-wrap items-end justify-between gap-4">
-              <div><p className="text-sm font-semibold text-[var(--cyan-700)]">{roleLabels[role]} · Live workspace</p><h1 className="mt-1 text-3xl font-semibold tracking-[-0.035em] text-[var(--navy-950)]">{data.title}</h1></div>
+              <div><p className="text-sm font-semibold text-[var(--cyan-700)]">{roleLabels[role]}</p><h1 className="mt-1 text-3xl font-semibold tracking-[-0.035em] text-[var(--navy-950)]">{data.title}</h1></div>
               <Button variant="outline" size="sm" disabled={busy} onClick={() => void load()}><RefreshCw className={busy ? "animate-spin" : ""} />刷新</Button>
             </div>
-            {role === "system_admin" ? <Alert className="mt-5"><ShieldAlert /><AlertTitle>系统权限不是业务超级管理员</AlertTitle><AlertDescription>默认仅显示技术状态和脱敏审计。临时支持需要独立主管审批、限定 scope、自动过期。</AlertDescription></Alert> : null}
             {role === "guardian" ? (
               <div className="mt-5 flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3">
                 <span className="mr-1 text-sm font-medium">切换关联学生</span>
@@ -635,12 +872,12 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
                       <h2 className="text-lg font-semibold text-[var(--navy-950)]">{section.title}</h2>
                       <span className="text-xs text-muted-foreground">
                         {section.totalRows === undefined
-                          ? `实时查询 · 当前 ${section.rows.length} 条`
-                          : `显示 ${section.rows.length} / 共 ${section.totalRows.toLocaleString("en-AU")} 条`}
+                          ? `共 ${section.rows.length} 条`
+                          : `本页 ${section.rows.length} 条 · 共 ${section.totalRows.toLocaleString("zh-CN")} 条`}
                       </span>
                     </div>
                     {role === "operations_admin" && section.id === "students" ? (
-                      <StudentDirectoryControls
+                      <StudentDirectory
                         section={section}
                         query={studentSearch}
                         ownedStudents={data.context?.ownedStudentCount ?? 0}
@@ -648,9 +885,16 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
                         onQueryChange={setStudentSearch}
                         onSearch={(value) => updateStudentDirectory(value, 1)}
                         onPageChange={(page) => updateStudentDirectory(studentSearch, page)}
+                        onView={(studentId) => void openStudentDetail(studentId)}
                       />
-                    ) : null}
-                    <DataTable rows={section.rows} />
+                    ) : section.id === "schedule" ? (
+                      <WeekCalendar
+                        events={scheduleEvents(section.rows)}
+                        anchorDate={data.context?.businessDate ?? new Date().toISOString().slice(0, 10)}
+                      />
+                    ) : (
+                      <DataTable rows={section.rows} />
+                    )}
                   </TabsContent>
                 ))}
               </Tabs>
@@ -666,12 +910,12 @@ export function PlatformWorkspace({ role, viewer, availableRoles }: {
                 {role === "manager_admin" ? <ManagerActions data={data} run={run} busy={busy} /> : null}
                 {role === "student" || role === "guardian" ? <PortalActions data={data} run={run} busy={busy} role={role} /> : null}
                 {role === "system_admin" ? <SystemActions run={run} busy={busy} /> : null}
-                <Link href="/" className="mt-4 flex items-center justify-center gap-2 rounded-lg border bg-white px-4 py-3 text-sm font-medium text-[var(--navy-900)] hover:bg-muted"><ArrowLeftRight className="size-4" />切换职责</Link>
               </aside>
             </div>
           </>
         ) : null}
       </div>
+      <StudentDetailSheet open={studentDetailOpen} onOpenChange={setStudentDetailOpen} detail={studentDetail} loading={studentDetailLoading} error={studentDetailError} />
       <Toaster position="bottom-center" />
     </main>
   );

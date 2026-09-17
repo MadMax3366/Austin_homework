@@ -10,6 +10,7 @@ import {
   makeFallbackFeedback,
   melbourneDate,
   platformCommandSchema,
+  weekRangeForDate,
 } from "../lib/domain.ts";
 
 test("attendance billing policy is explicit", () => {
@@ -63,6 +64,17 @@ test("Melbourne business date does not depend on server timezone", () => {
     melbourneDate(new Date("2026-09-16T15:30:00.000Z")),
     "2026-09-17",
   );
+});
+
+test("calendar weeks run from Monday through Sunday", () => {
+  assert.deepEqual(weekRangeForDate("2026-09-17"), {
+    startsOn: "2026-09-14",
+    endsOn: "2026-09-20",
+  });
+  assert.deepEqual(weekRangeForDate("2026-09-20"), {
+    startsOn: "2026-09-14",
+    endsOn: "2026-09-20",
+  });
 });
 
 test("platform command validation rejects malformed money and unknown fields", () => {

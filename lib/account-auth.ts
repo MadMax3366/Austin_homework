@@ -1,7 +1,7 @@
 import "server-only";
 
-import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { getD1 } from "@/db";
+import { getAuthenticatedIdentity } from "@/lib/auth-session";
 import { AppError } from "@/lib/domain";
 
 export type PlatformRole =
@@ -31,7 +31,7 @@ export type PlatformAccount = {
 };
 
 export async function getPlatformAccount(): Promise<PlatformAccount | null> {
-  const identity = await getChatGPTUser();
+  const identity = await getAuthenticatedIdentity();
   if (!identity) return null;
   const account = await getD1()
     .prepare(
@@ -42,12 +42,13 @@ export async function getPlatformAccount(): Promise<PlatformAccount | null> {
        FROM user_accounts account_record
        JOIN organizations organization
          ON organization.id=account_record.organization_id
-       WHERE account_record.auth_user_id = ?
+       WHERE ((? IS NOT NULL AND account_record.id=?)
+          OR (? IS NULL AND account_record.auth_user_id=?))
          AND account_record.status = 'active'
          AND organization.status = 'active'
        LIMIT 1`,
     )
-    .bind(identity.userId)
+    .bind(identity.accountId, identity.accountId, identity.accountId, identity.userId)
     .first<Omit<PlatformAccount, "roles">>();
   if (!account) return null;
 
@@ -70,16 +71,16 @@ export async function getPlatformAccount(): Promise<PlatformAccount | null> {
 }
 
 export async function requirePlatformAccount(): Promise<PlatformAccount> {
-  const identity = await getChatGPTUser();
+  const identity = await getAuthenticatedIdentity();
   if (!identity) {
-    throw new AppError(401, "AUTH_REQUIRED", "Sign in to continue.");
+    throw new AppError(401, "AUTH_REQUIRED", "请先登录。");
   }
   const account = await getPlatformAccount();
   if (!account) {
     throw new AppError(
       403,
       "PLATFORM_ACCOUNT_REQUIRED",
-      "This identity has not been provisioned for the organization.",
+      "当前账号尚未开通。",
     );
   }
   return account;
@@ -94,7 +95,7 @@ export async function requirePlatformRole(
     throw new AppError(
       403,
       "ROLE_FORBIDDEN",
-      `The ${role} workspace is not assigned to this account.`,
+      "当前账号无权访问该工作台。",
     );
   }
   return { account, assignment };
@@ -109,7 +110,7 @@ export async function requireAnyPlatformRole(
     throw new AppError(
       403,
       "ROLE_FORBIDDEN",
-      "This account cannot perform the requested operation.",
+      "当前账号无权执行此操作。",
     );
   }
   return { account, assignment };

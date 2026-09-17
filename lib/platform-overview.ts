@@ -6,7 +6,7 @@ import type {
   PlatformRole,
   RoleAssignment,
 } from "@/lib/account-auth";
-import { AppError, melbourneDate } from "@/lib/domain";
+import { AppError, melbourneDate, weekRangeForDate } from "@/lib/domain";
 
 export type OverviewMetric = {
   label: string;
@@ -35,6 +35,9 @@ export type PlatformOverview = {
     studentQuery?: string;
     ownedStudentCount?: number;
     organizationStudentCount?: number;
+    weekStartsOn?: string;
+    weekEndsOn?: string;
+    businessDate?: string;
   };
 };
 
@@ -56,6 +59,7 @@ async function operationsOverview(
 ): Promise<PlatformOverview> {
   const db = getD1();
   const today = melbourneDate();
+  const week = weekRangeForDate(today);
   const thresholdSetting = await db.prepare(
     `SELECT value_json AS valueJson FROM organization_settings
      WHERE organization_id=? AND setting_key='renewal.threshold' LIMIT 1`,
@@ -241,6 +245,7 @@ async function operationsOverview(
       .bind(account.organizationId, assignment.scopeType, assignment.staffUserId)
       .all<Record<string, string | number | null>>(),
     db.prepare(`SELECT session.id, series.name AS className,
+        session.session_date AS sessionDate,
         session.session_kind AS kind, session.local_start_time AS startTime,
         session.local_end_time AS endTime, series.room,
         staff.display_name AS teacher, session.status,
@@ -250,9 +255,9 @@ async function operationsOverview(
       JOIN staff_users staff ON staff.id=session.teacher_id
       LEFT JOIN session_participants participant
         ON participant.lesson_session_id=session.id AND participant.removed_at IS NULL
-      WHERE session.session_date=?
-      GROUP BY session.id ORDER BY session.local_start_time`)
-      .bind(today)
+      WHERE session.session_date BETWEEN ? AND ?
+      GROUP BY session.id ORDER BY session.session_date,session.local_start_time`)
+      .bind(week.startsOn, week.endsOn)
       .all<Record<string, string | number | null>>(),
     db.prepare(`SELECT student.id,
         COALESCE(student.preferred_name,student.legal_name) AS student,
@@ -328,6 +333,9 @@ async function operationsOverview(
       studentQuery,
       ownedStudentCount: Number(summary?.ownedStudents ?? 0),
       organizationStudentCount: Number(summary?.organizationStudents ?? 0),
+      weekStartsOn: week.startsOn,
+      weekEndsOn: week.endsOn,
+      businessDate: today,
     },
     metrics: [
       { label: "试听完成待跟进", value: trialAttention.length, tone: "warning" },
@@ -343,7 +351,7 @@ async function operationsOverview(
       { id: "inquiries", title: "招生与试听", rows: inquiries.results },
       { id: "trials", title: "试听结果", rows: trials.results },
       { id: "tasks", title: "待跟进任务", rows: tasks.results },
-      { id: "schedule", title: "今日全局课表", rows: schedule.results },
+      { id: "schedule", title: "本周课表", rows: schedule.results },
       {
         id: "students",
         title: "学生与课时",
@@ -543,9 +551,10 @@ async function portalOverview(
     studentId = selectedStudentId ?? (family[0]?.id ? String(family[0].id) : null);
   }
   if (!studentId) {
-    return { role, title: role === "guardian" ? "监护人门户" : "学生门户", metrics: [], sections: [] };
+    return { role, title: role === "guardian" ? "家长门户" : "学生门户", metrics: [], sections: [] };
   }
   const today = melbourneDate();
+  const week = weekRangeForDate(today);
   const [student, schedule, attendanceResult, ordersResult, messagesResult] =
     await Promise.all([
       db.prepare(`SELECT student.id,
@@ -559,17 +568,18 @@ async function portalOverview(
         WHERE student.id=? GROUP BY student.id`)
         .bind(studentId)
         .first<Record<string, string | number | null>>(),
-      db.prepare(`SELECT series.name AS className,
+      db.prepare(`SELECT session.id,series.name AS className,
           session.session_kind AS kind, session.session_date AS sessionDate,
-          session.local_start_time AS startTime, series.room,
+          session.local_start_time AS startTime,
+          session.local_end_time AS endTime, series.room,
           teacher.display_name AS teacher, session.status
         FROM session_participants participant
         JOIN lesson_sessions session ON session.id=participant.lesson_session_id
         JOIN class_series series ON series.id=session.class_series_id
         JOIN staff_users teacher ON teacher.id=session.teacher_id
-        WHERE participant.student_id=? AND session.session_date>=?
+        WHERE participant.student_id=? AND session.session_date BETWEEN ? AND ?
         ORDER BY session.session_date,session.local_start_time LIMIT 30`)
-        .bind(studentId, today)
+        .bind(studentId, week.startsOn, week.endsOn)
         .all<Record<string, string | number | null>>(),
       db.prepare(`SELECT series.name AS className,
           session.session_date AS sessionDate, attendance.status,
@@ -587,7 +597,7 @@ async function portalOverview(
         FROM orders WHERE student_id=? ORDER BY created_at DESC LIMIT 30`)
         .bind(studentId)
         .all<Record<string, string | number | null>>(),
-      db.prepare(`SELECT id, channel, subject, body, status, sent_at AS sentAt
+      db.prepare(`SELECT id, channel, subject AS title, body, status, sent_at AS sentAt
         FROM messages
         WHERE student_id=? OR (? IS NOT NULL AND guardian_id=?)
         ORDER BY created_at DESC LIMIT 30`)
@@ -596,12 +606,17 @@ async function portalOverview(
     ]);
   return {
     role,
-    title: role === "guardian" ? "监护人门户" : "学生门户",
-    context: { studentId },
+    title: role === "guardian" ? "家长门户" : "学生门户",
+    context: {
+      studentId,
+      weekStartsOn: week.startsOn,
+      weekEndsOn: week.endsOn,
+      businessDate: today,
+    },
     metrics: [
       { label: "学生", value: String(student?.student ?? "—") },
       { label: "剩余课时", value: Number(student?.credits ?? 0) },
-      { label: "未来课次", value: schedule.results.length },
+      { label: "本周课次", value: schedule.results.length },
       { label: "待支付订单", value: ordersResult.results.filter((row) => row.status === "pending").length, tone: "warning" },
     ],
     sections: [

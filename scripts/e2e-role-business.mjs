@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 
 const baseUrl = process.env.AUS_E2E_BASE_URL ?? "http://127.0.0.1:8787";
 const demoIdentity = {
-  "oai-authenticated-user-id": "local_seedy",
-  "oai-authenticated-user-email": "seedy@sites.test",
+  "oai-authenticated-user-id": "e2e_multirole",
+  "oai-authenticated-user-email": "e2e@example.test",
 };
 const independentManagerIdentity = {
   "oai-authenticated-user-id": "demo_independent_manager",
   "oai-authenticated-user-email": "manager2@example.test",
+};
+const studentIdentity = {
+  "oai-authenticated-user-id": "login_student",
+  "oai-authenticated-user-email": "student@austin.edu",
 };
 
 const checks = [];
@@ -106,6 +110,52 @@ assert.deepEqual(
   new Set(["teacher", "operations_admin", "manager_admin", "student", "guardian", "system_admin"]),
 );
 
+const wrongLogin = await fetch(`${baseUrl}/api/auth/login`, {
+  method: "POST",
+  headers: { "content-type": "application/json", origin: baseUrl },
+  body: JSON.stringify({ email: "operations@austin.edu", password: "wrong-password" }),
+});
+assert.equal(wrongLogin.status, 401);
+checks.push({ label: "Login rejects an invalid password", status: 401 });
+
+const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+  method: "POST",
+  headers: { "content-type": "application/json", origin: baseUrl },
+  body: JSON.stringify({ email: "operations@austin.edu", password: "Operations#2026" }),
+});
+assert.equal(loginResponse.status, 200);
+const sessionCookie = loginResponse.headers.get("set-cookie")?.split(";", 1)[0];
+assert.ok(sessionCookie?.startsWith("austin_session="));
+checks.push({ label: "Operations account signs in with its own credential", status: 200 });
+
+const sessionAccountResponse = await fetch(`${baseUrl}/api/account`, {
+  headers: { cookie: sessionCookie },
+});
+assert.equal(sessionAccountResponse.status, 200);
+const sessionAccount = await sessionAccountResponse.json();
+assert.deepEqual(sessionAccount.roles.map((role) => role.role), ["operations_admin"]);
+checks.push({ label: "Signed-in account sees only its assigned workspace", status: 200 });
+
+const sessionForbidden = await fetch(`${baseUrl}/api/workspace`, {
+  headers: { cookie: sessionCookie },
+});
+assert.equal(sessionForbidden.status, 403);
+checks.push({ label: "Operations session cannot enter teacher workspace", status: 403 });
+
+const logoutResponse = await fetch(`${baseUrl}/api/auth/logout`, {
+  method: "POST",
+  redirect: "manual",
+  headers: { cookie: sessionCookie, origin: baseUrl },
+});
+assert.equal(logoutResponse.status, 303);
+checks.push({ label: "Logout revokes the server session", status: 303 });
+
+const revokedResponse = await fetch(`${baseUrl}/api/account`, {
+  headers: { cookie: sessionCookie },
+});
+assert.equal(revokedResponse.status, 401);
+checks.push({ label: "Revoked session cannot be reused", status: 401 });
+
 for (const role of ["operations_admin", "manager_admin", "student", "guardian", "system_admin"]) {
   const overview = await call(`${role} overview`, `/api/platform/overview?role=${role}`);
   assert.equal(overview.role, role);
@@ -148,6 +198,21 @@ const studentSearch = await call(
 const searchSection = studentSearch.sections.find((section) => section.id === "students");
 assert.equal(searchSection?.totalRows, 1);
 assert.equal(searchSection?.rows[0]?.id, "student_scale_1000");
+
+const studentDetail = await call(
+  "Operations opens a student relationship and schedule detail",
+  "/api/platform/students/student_01",
+);
+assert.equal(studentDetail.student.id, "student_01");
+assert.ok(studentDetail.guardians.length >= 1);
+assert.ok(studentDetail.enrollments.length >= 1);
+assert.ok(studentDetail.schedule.length >= 3);
+
+await call(
+  "Student account cannot open operations student detail",
+  "/api/platform/students/student_01",
+  { identity: studentIdentity, expected: 403 },
+);
 
 const escapedWildcard = await call(
   "Student search treats wildcard input literally",
@@ -271,7 +336,7 @@ const firstTrial = await command("Operations schedules trial", "operations_admin
   date: tomorrow,
   startTime: "16:00",
   endTime: "17:00",
-  room: "Room 3",
+  room: "3号教室",
 });
 await command("Trial result cannot precede attendance", "operations_admin", {
   action: "record_trial_outcome",
@@ -298,7 +363,7 @@ await command("Teacher overlap rejected", "operations_admin", {
   date: tomorrow,
   startTime: "16:30",
   endTime: "17:30",
-  room: "Room 2",
+  room: "2号教室",
 }, 409);
 
 await command("Cancelled trial cannot directly enrol", "operations_admin", {

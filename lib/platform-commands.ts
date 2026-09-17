@@ -905,7 +905,7 @@ async function processOutbox(
   await db.batch(statements);
   return {
     action: input.action,
-    message: `沙盒 worker 已处理 ${rows.results.length} 个事件。`,
+    message: `已处理 ${rows.results.length} 个待发送任务。`,
     details: { processed: rows.results.length },
   };
 }
@@ -992,7 +992,7 @@ async function approveSupport(
       `audit_support_approved_${support.id}`,
     ),
   ]);
-  return { action: input.action, entityId: support.id, message: `紧急支持权限已限时开放 ${input.minutes} 分钟。` };
+  return { action: input.action, entityId: support.id, message: `临时支持会话已批准，有效期 ${input.minutes} 分钟。` };
 }
 
 async function updateSetting(

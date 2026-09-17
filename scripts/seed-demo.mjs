@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { pbkdf2Sync } from "node:crypto";
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
@@ -50,6 +51,15 @@ const monthEnd = new Date(Date.UTC(currentYear, currentMonth, 0))
   .toISOString()
   .slice(0, 10);
 const weekday = new Date(`${today}T00:00:00Z`).getUTCDay();
+const weekStart = dateFromOffset(weekday === 0 ? -6 : 1 - weekday);
+const weekDates = Array.from({ length: 7 }, (_, index) => {
+  const value = new Date(`${weekStart}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + index);
+  return value.toISOString().slice(0, 10);
+});
+const calendarDates = weekDates.filter((date) => date !== today);
+const calendarMakeupDate = calendarDates[1] ?? calendarDates[0];
+const calendarPrivateDate = calendarDates.at(-2) ?? calendarDates.at(-1);
 const currentMinutes = Number(now.hour) * 60 + Number(now.minute);
 const activeStart = Math.max(0, Math.min(24 * 60 - 61, currentMinutes - 30));
 const alternatives = [-120, 120, -240, 240]
@@ -66,7 +76,32 @@ const sessionIds = {
   english: `session_y5_english_${today}`,
   science: `session_y8_science_${today}`,
   other: `session_other_teacher_${today}`,
+  calendarMakeup: `session_calendar_makeup_${calendarMakeupDate}`,
+  calendarPrivate: `session_calendar_private_${calendarPrivateDate}`,
 };
+
+const credentialIterations = 150_000;
+const loginAccounts = [
+  ["account_login_teacher", "teacher@austin.edu", "Teacher#2026", "tjC3ts/UIt9r4+jQKXGDPg=="],
+  ["account_login_operations", "operations@austin.edu", "Operations#2026", "zKA+GIfwlqI83W4jvipclg=="],
+  ["account_login_manager", "manager@austin.edu", "Manager#2026", "d8FkBX+hlb8qjxCcqGyrkQ=="],
+  ["account_login_student", "student@austin.edu", "Student#2026", "A+BEpf3a5DE8U61vJdr2qQ=="],
+  ["account_login_guardian", "guardian@austin.edu", "Guardian#2026", "pdQtjrCT2xEvCTu318YgxQ=="],
+  ["account_login_system", "system@austin.edu", "System#2026", "O/LJVcMrdivD5MJ/rNjqKQ=="],
+].map(([accountId, email, password, salt]) => ({
+  accountId,
+  email,
+  password,
+  salt,
+  hash: pbkdf2Sync(password, Buffer.from(salt, "base64"), credentialIterations, 32, "sha256").toString("base64"),
+}));
+
+const credentialValues = loginAccounts
+  .map(
+    (account) =>
+      `('${account.accountId}','${account.salt}','${account.hash}',${credentialIterations},0,NULL)`,
+  )
+  .join(",\n  ");
 
 const sql = `
 INSERT OR IGNORE INTO staff_users
@@ -238,10 +273,10 @@ WHERE student.id LIKE 'student_scale_%';
 INSERT OR IGNORE INTO class_series
   (id, name, subject, room, weekday, local_start_time, local_end_time, default_teacher_id, capacity, active)
 VALUES
-  ('series_y6_math', 'Year 6 Mathematics', 'Mathematics', 'Room 4', ${weekday}, '${active.start}', '${active.end}', 'staff_teacher_mei', 10, 1),
-  ('series_y5_english', 'Year 5 English', 'English', 'Room 2', ${weekday}, '${secondary.start}', '${secondary.end}', 'staff_teacher_mei', 12, 1),
-  ('series_y8_science', 'Year 8 Science', 'Science', 'Lab 1', ${weekday}, '${tertiary.start}', '${tertiary.end}', 'staff_teacher_mei', 12, 1),
-  ('series_other_teacher', 'Year 7 Writing', 'English', 'Room 3', ${weekday}, '${active.start}', '${active.end}', 'staff_teacher_arjun', 10, 1);
+  ('series_y6_math', '六年级数学', '数学', '4号教室', ${weekday}, '${active.start}', '${active.end}', 'staff_teacher_mei', 10, 1),
+  ('series_y5_english', '五年级英语', '英语', '2号教室', ${weekday}, '${secondary.start}', '${secondary.end}', 'staff_teacher_mei', 12, 1),
+  ('series_y8_science', '八年级科学', '科学', '实验室1', ${weekday}, '${tertiary.start}', '${tertiary.end}', 'staff_teacher_mei', 12, 1),
+  ('series_other_teacher', '七年级写作', '英语', '3号教室', ${weekday}, '${active.start}', '${active.end}', 'staff_teacher_arjun', 10, 1);
 
 INSERT INTO lesson_sessions
   (id, class_series_id, teacher_id, session_date, local_start_time, local_end_time, status)
@@ -256,6 +291,15 @@ WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='${sessionIds.science}'
 UNION ALL
 SELECT '${sessionIds.other}', 'series_other_teacher', 'staff_teacher_arjun', '${today}', '${active.start}', '${active.end}', 'scheduled'
 WHERE NOT EXISTS (SELECT 1 FROM lesson_sessions WHERE id='${sessionIds.other}');
+
+INSERT OR IGNORE INTO lesson_sessions
+  (id,class_series_id,teacher_id,session_date,local_start_time,local_end_time,
+   session_kind,status)
+VALUES
+  ('${sessionIds.calendarMakeup}','series_y5_english','staff_teacher_mei',
+   '${calendarMakeupDate}','${secondary.start}','${secondary.end}','makeup','scheduled'),
+  ('${sessionIds.calendarPrivate}','series_y8_science','staff_teacher_mei',
+   '${calendarPrivateDate}','${tertiary.start}','${tertiary.end}','private','scheduled');
 
 INSERT OR IGNORE INTO enrollments
   (id, student_id, class_series_id, starts_on, status)
@@ -361,13 +405,34 @@ JOIN credit_accounts AS account ON account.student_id = student.id
 WHERE enrollment.class_series_id = 'series_other_teacher'
   AND enrollment.status = 'active';
 
+INSERT OR IGNORE INTO session_participants
+  (id,lesson_session_id,student_id,enrollment_id,credit_account_id,
+   display_name,date_of_birth,is_new,source,sort_order)
+SELECT
+  'participant_' || session.id || '_student_01',
+  session.id,
+  student.id,
+  NULL,
+  account.id,
+  COALESCE(student.preferred_name,student.legal_name),
+  student.date_of_birth,
+  0,
+  CASE session.session_kind WHEN 'makeup' THEN 'makeup' ELSE 'manual' END,
+  1
+FROM lesson_sessions session
+JOIN students student ON student.id='student_01'
+JOIN credit_accounts account ON account.student_id=student.id
+WHERE session.id IN ('${sessionIds.calendarMakeup}','${sessionIds.calendarPrivate}');
+
 UPDATE lesson_sessions
 SET roster_frozen_at = COALESCE(roster_frozen_at, CURRENT_TIMESTAMP)
 WHERE id IN (
   '${sessionIds.math}',
   '${sessionIds.english}',
   '${sessionIds.science}',
-  '${sessionIds.other}'
+  '${sessionIds.other}',
+  '${sessionIds.calendarMakeup}',
+  '${sessionIds.calendarPrivate}'
 );
 
 INSERT OR IGNORE INTO organizations (id,name,timezone,status)
@@ -376,13 +441,19 @@ VALUES ('org_austin','Austin Education','Australia/Melbourne','active');
 INSERT OR IGNORE INTO user_accounts
   (id,organization_id,auth_user_id,email,display_name,status)
 VALUES
-  ('account_demo','org_austin','local_seedy','seedy@sites.test','Demo User','active'),
+  ('account_demo','org_austin','e2e_multirole','e2e@example.test','自动化验收账号','active'),
   ('account_independent_manager','org_austin','demo_independent_manager',
    'manager2@example.test','Independent Manager','active'),
   ('account_operations_02','org_austin','demo_admin_liam',
    'liam@example.test','Liam Wilson','active'),
   ('account_teacher_02','org_austin','demo_teacher_arjun',
-   'arjun@example.test','Arjun Patel','active');
+   'arjun@example.test','Arjun Patel','active'),
+  ('account_login_teacher','org_austin','login_teacher','teacher@austin.edu','林老师','active'),
+  ('account_login_operations','org_austin','login_operations','operations@austin.edu','Sofia Nguyen','active'),
+  ('account_login_manager','org_austin','login_manager','manager@austin.edu','Ava Thompson','active'),
+  ('account_login_student','org_austin','login_student','student@austin.edu','Olivia Chen','active'),
+  ('account_login_guardian','org_austin','login_guardian','guardian@austin.edu','Grace Chen','active'),
+  ('account_login_system','org_austin','login_system','system@austin.edu','系统管理员','active');
 
 WITH RECURSIVE seq(n) AS (
   SELECT 3
@@ -399,6 +470,11 @@ SELECT
   printf('Operations Admin %02d', n),
   'active'
 FROM seq;
+
+INSERT OR IGNORE INTO account_credentials
+  (account_id,password_salt,password_hash,iterations,failed_attempts,locked_until)
+VALUES
+  ${credentialValues};
 
 WITH RECURSIVE seq(n) AS (
   SELECT 3
@@ -427,7 +503,13 @@ VALUES
   ('role_demo_system','account_demo','system_admin',NULL,NULL,NULL,'organization','org_austin',1),
   ('role_independent_manager','account_independent_manager','manager_admin','staff_manager_ava',NULL,NULL,'organization','org_austin',1),
   ('role_operations_02','account_operations_02','operations_admin','staff_admin_liam',NULL,NULL,'owner','staff_admin_liam',1),
-  ('role_teacher_02','account_teacher_02','teacher','staff_teacher_arjun',NULL,NULL,'self','staff_teacher_arjun',1);
+  ('role_teacher_02','account_teacher_02','teacher','staff_teacher_arjun',NULL,NULL,'self','staff_teacher_arjun',1),
+  ('role_login_teacher','account_login_teacher','teacher','staff_teacher_mei',NULL,NULL,'self','staff_teacher_mei',1),
+  ('role_login_operations','account_login_operations','operations_admin','staff_admin_sofia',NULL,NULL,'owner','staff_admin_sofia',1),
+  ('role_login_manager','account_login_manager','manager_admin','staff_manager_ava',NULL,NULL,'organization','org_austin',1),
+  ('role_login_student','account_login_student','student',NULL,'student_01',NULL,'self','student_01',1),
+  ('role_login_guardian','account_login_guardian','guardian',NULL,NULL,'guardian_01','self','guardian_01',1),
+  ('role_login_system','account_login_system','system_admin',NULL,NULL,NULL,'organization','org_austin',1);
 
 WITH RECURSIVE seq(n) AS (
   SELECT 3
@@ -483,9 +565,9 @@ VALUES
 INSERT OR IGNORE INTO programs
   (id,organization_id,name,subject,default_session_minutes,active)
 VALUES
-  ('program_math','org_austin','Core Mathematics','Mathematics',60,1),
-  ('program_english','org_austin','English Foundations','English',60,1),
-  ('program_science','org_austin','Science Lab','Science',60,1);
+  ('program_math','org_austin','核心数学','数学',60,1),
+  ('program_english','org_austin','英语基础','英语',60,1),
+  ('program_science','org_austin','科学实验','科学',60,1);
 
 INSERT OR IGNORE INTO class_series_programs (class_series_id,program_id)
 VALUES
@@ -496,11 +578,11 @@ VALUES
 
 INSERT OR IGNORE INTO rooms (id,organization_id,name,capacity,active)
 VALUES
-  ('room_2','org_austin','Room 2',12,1),
-  ('room_3','org_austin','Room 3',10,1),
-  ('room_4','org_austin','Room 4',10,1),
-  ('room_lab_1','org_austin','Lab 1',12,1),
-  ('room_5','org_austin','Room 5',8,1);
+  ('room_2','org_austin','2号教室',12,1),
+  ('room_3','org_austin','3号教室',10,1),
+  ('room_4','org_austin','4号教室',10,1),
+  ('room_lab_1','org_austin','实验室1',12,1),
+  ('room_5','org_austin','5号教室',8,1);
 
 WITH RECURSIVE seq(n) AS (
   SELECT 1
@@ -511,7 +593,7 @@ INSERT OR IGNORE INTO rooms (id,organization_id,name,capacity,active)
 SELECT
   printf('room_scale_%02d', n),
   'org_austin',
-  printf('Scale Room %02d', n),
+  printf('扩展教室%02d', n),
   14,
   1
 FROM seq;
@@ -526,9 +608,9 @@ INSERT OR IGNORE INTO class_series
    session_kind,default_teacher_id,capacity,active)
 SELECT
   printf('series_scale_%02d', n),
-  printf('Weekly Class %02d', n),
-  CASE n % 3 WHEN 0 THEN 'Mathematics' WHEN 1 THEN 'English' ELSE 'Science' END,
-  printf('Scale Room %02d', 1 + ((n - 1) % 8)),
+  printf('每周固定班%02d', n),
+  CASE n % 3 WHEN 0 THEN '数学' WHEN 1 THEN '英语' ELSE '科学' END,
+  printf('扩展教室%02d', 1 + ((n - 1) % 8)),
   1 + ((n - 1) % 6),
   printf('%02d:00', 9 + ((n - 1) % 8)),
   printf('%02d:00', 10 + ((n - 1) % 8)),
@@ -546,8 +628,8 @@ INSERT OR IGNORE INTO class_series_programs (class_series_id,program_id)
 SELECT
   series.id,
   CASE series.subject
-    WHEN 'Mathematics' THEN 'program_math'
-    WHEN 'English' THEN 'program_english'
+    WHEN '数学' THEN 'program_math'
+    WHEN '英语' THEN 'program_english'
     ELSE 'program_science'
   END
 FROM class_series AS series

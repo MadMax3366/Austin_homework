@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getD1 } from "@/db";
-import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { requirePlatformRole } from "@/lib/account-auth";
 import { AppError } from "@/lib/domain";
 
 export type StaffUser = {
@@ -16,9 +16,9 @@ export type StaffUser = {
 export async function requireStaff(
   allowedRoles?: StaffUser["role"][],
 ): Promise<StaffUser> {
-  const identity = await getChatGPTUser();
-  if (!identity) {
-    throw new AppError(401, "AUTH_REQUIRED", "Sign in to continue.");
+  const { assignment } = await requirePlatformRole("teacher");
+  if (!assignment.staffUserId) {
+    throw new AppError(403, "STAFF_ACCESS_REQUIRED", "教师账号未关联员工档案。");
   }
 
   const row = await getD1()
@@ -31,17 +31,17 @@ export async function requireStaff(
         role,
         active
        FROM staff_users
-       WHERE auth_user_id = ?
+       WHERE id = ?
        LIMIT 1`,
     )
-    .bind(identity.userId)
+    .bind(assignment.staffUserId)
     .first<StaffUser>();
 
   if (!row || !row.active) {
     throw new AppError(
       403,
       "STAFF_ACCESS_REQUIRED",
-      "This signed-in account is not an active staff member.",
+      "当前教师账号已停用或不存在。",
     );
   }
 
@@ -49,7 +49,7 @@ export async function requireStaff(
     throw new AppError(
       403,
       "ROLE_FORBIDDEN",
-      "Your role cannot perform this action.",
+      "当前账号无权执行此操作。",
     );
   }
 
