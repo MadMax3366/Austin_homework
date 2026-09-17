@@ -16,7 +16,7 @@ import {
 test("attendance billing policy is explicit", () => {
   assert.equal(isBillable("present"), true);
   assert.equal(isBillable("late"), true);
-  assert.equal(isBillable("absent"), false);
+  assert.equal(isBillable("absent"), true);
 });
 
 test("complete class input rejects duplicate students", () => {

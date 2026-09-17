@@ -556,7 +556,7 @@ INSERT OR IGNORE INTO organization_settings
   (id,organization_id,setting_key,value_json,updated_by_id)
 VALUES
   ('setting_attendance','org_austin','attendance.policy',
-   '{"presentBillable":true,"lateBillable":true,"absentBillable":false,"trialBillable":false}',
+   '{"presentBillable":true,"lateBillable":true,"absentBillable":true,"trialBillable":false}',
    'staff_manager_ava'),
   ('setting_locale','org_austin','organization.locale',
    '{"language":"en-AU","timezone":"Australia/Melbourne","currency":"AUD"}',

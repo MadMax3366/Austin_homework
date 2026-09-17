@@ -231,7 +231,7 @@ export type FaqQuestionInput = z.infer<typeof faqQuestionSchema>;
 export type FaqDecision = z.infer<typeof faqDecisionSchema>;
 
 export function isBillable(status: AttendanceStatus): boolean {
-  return status === "present" || status === "late";
+  return status === "present" || status === "late" || status === "absent";
 }
 
 export function makeFallbackFeedback(

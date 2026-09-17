@@ -473,7 +473,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
       data?.roster.filter(
         (student) =>
           student.billingPolicy === "billable" &&
-          (attendance[student.id] === "present" || attendance[student.id] === "late"),
+          attendance[student.id] !== null && attendance[student.id] !== undefined,
       ).length ?? 0,
     [attendance, data],
   );
@@ -1140,7 +1140,6 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                   const nextBalance =
                     locked ||
                     status === null ||
-                    status === "absent" ||
                     student.billingPolicy === "trial_free"
                       ? student.balance
                       : Math.max(0, student.balance - 1);
@@ -1148,7 +1147,7 @@ export function TeacherWorkspace({ viewer }: { viewer: Viewer }) {
                     locked
                       ? student.billingStatus ===
                         "pending_insufficient_credit"
-                      : (status === "present" || status === "late") &&
+                      : status !== null &&
                         student.billingPolicy === "billable" &&
                         student.balance < 1;
 
