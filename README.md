@@ -1,40 +1,44 @@
-# Austin Education · Teacher Workspace
+# Austin Education · Teacher Attendance Vertical Slice
 
-A focused full-stack reference solution for the take-home assignment. It implements one complete vertical slice:
+This take-home submission implements one complete workflow:
 
-> teacher sign-in → today’s assigned classes → roster and new-student context → attendance → immutable lesson-credit entries → editable structured family-update draft.
+> teacher sign-in → Melbourne-day class roster → explicit attendance → immutable lesson-credit ledger or billing exception → editable structured feedback → completed read-only result.
 
-The product and domain decisions are in [DESIGN.md](./DESIGN.md). A suggested interviewer rubric and destructive-test guide are in [INTERVIEWER_NOTES.md](./INTERVIEWER_NOTES.md).
+The narrow implementation sits inside a broader student-operations design:
 
-## What is implemented
+- [DESIGN.md](./DESIGN.md) — concise Part A submission.
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — roles, lifecycles, modules, data model and evolution.
+- [DEMO.md](./DEMO.md) — ten-minute vertical-slice proposal.
+- [TESTING.md](./TESTING.md) — adversarial and recovery test plan.
 
-- React 19 + TypeScript teacher workspace, responsive from mobile to desktop.
-- Server-rendered ChatGPT sign-in gate; local development provides a simulated staff account.
-- Cloudflare D1 / SQLite with Drizzle schema and five checked-in migrations.
-- 30 synthetic students, two teachers, one admin, guardians, three visible classes and a second teacher’s protected class.
-- Object-level authorisation: a teacher cannot read or complete another teacher’s session.
-- Whole-roster submission with server validation and an idempotency key.
-- Attendance and credit ledger entries written in one D1 batch transaction.
-- An immutable ledger with database uniqueness and protection triggers.
-- Zero-credit policy: save the attendance fact, create no negative ledger entry, and mark it for admin review.
-- Structured LLM feedback with JSON Schema + Zod validation, PII reduction, an 8-second timeout and a deterministic no-key/failure fallback.
-- Loading, empty, error, conflict, fallback, completion and insufficient-credit states.
-- A small WebMCP tool (`complete_current_class`) that uses the same server action as the visible UI when the browser supports the proposed API.
+## Implemented
 
-## Run locally
+- React 19 + TypeScript responsive teacher workspace.
+- Server-rendered sign-in and server-side role/object authorisation.
+- Cloudflare D1 / SQLite with reviewed Drizzle migrations.
+- Explicit, idempotent local seed with 30 synthetic students and two teachers.
+- Frozen `SessionParticipant` snapshots, so later Enrollment changes do not rewrite history.
+- Explicit unmarked attendance, “mark all present”, and a consequential final confirmation.
+- Database-validated completion claim before Attendance/Ledger/Audit writes.
+- Idempotency key + canonical request hash + stable completion receipt.
+- Immutable CreditTransaction ledger with account/source and non-negative checks.
+- Zero-credit Attendance plus a real `BillingException` queue and admin/manager resolution API.
+- Request IDs, body limits, same-origin writes and differentiated business/infrastructure errors.
+- Session-scoped draft recovery, dirty guard, request cancellation and unknown-outcome reconciliation.
+- AI structured output, Zod validation, name/contact/date reduction, sensitive-note fallback,
+  `store:false`, two-level rate limiting and metadata-only audit.
+- Loading, empty, unauthorised, cancelled, conflict, fallback and completed states.
+
+## Local setup
 
 Requirements: Node.js 22.13+ and npm.
-
-### 1. Install and build
 
 ```bash
 npm run install:ci
 npm run build
 ```
 
-The first build creates `dist/server/wrangler.json` with the local D1 binding.
-
-### 2. Apply the local migrations once, in order
+Apply the migrations once, in order:
 
 ```bash
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_opposite_hulk.sql
@@ -42,94 +46,106 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0002_fuzzy_wild_pack.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0003_attendance-guards.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0004_optimize-indexes.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0005_broken_loners.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0006_harden-completion.sql
 ```
 
-### 3. Start the app
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:5173](http://localhost:5173), choose **Sign in with ChatGPT**, and the local Sites runtime signs in `seedy@sites.test` as teacher Mei Lin.
-
-The first authenticated workspace request runs the idempotent seed routine in [lib/demo-data.ts](./lib/demo-data.ts). To run it explicitly while the development server is active:
+Seed synthetic local data explicitly, then start the app:
 
 ```bash
 npm run db:seed
+npm run dev
 ```
 
-All names, contacts and records are synthetic.
+Open [http://localhost:5173](http://localhost:5173) and choose **Sign in with ChatGPT**.
+The local Sites runtime signs in `seedy@sites.test` as teacher Mei Lin.
 
-## Optional live AI mode
+The normal application routes never create or mutate demo data. The seed command is local-only
+and creates:
 
-The attendance workflow never requires an AI provider. Without configuration, “Draft family update” returns a validated local fallback and labels it clearly.
+- one current class owned by Mei;
+- a protected class owned by Arjun;
+- exactly one new student;
+- balances of 14, 8, 3, 1 and 0 credits;
+- frozen participant snapshots.
 
-To exercise the live provider path, copy `.env.example` to `.env.local` and supply:
+All names and contact details are synthetic.
+
+## Optional live AI
+
+Without a key, “Draft family update” returns a validated local fallback. The attendance workflow
+does not depend on the provider.
+
+Copy `.env.example` to `.env.local`:
 
 ```dotenv
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5-mini
 ```
 
-The key is used only by the server-side route and must never be committed. Hosted runtime values should be configured in the hosting control plane.
+The provider request is server-side, uses `store:false` and receives only reduced class-note text.
+Do not commit secrets or real student information.
+
+## API surface
+
+| Method | Route | Authorisation |
+|---|---|---|
+| GET | `/api/workspace?sessionId=...` | Teacher; own sessions only |
+| POST | `/api/sessions/:sessionId/complete` | Teacher; assigned session; Idempotency-Key |
+| POST | `/api/feedback/draft` | Teacher; assigned scheduled session |
+| GET | `/api/admin/billing-exceptions` | Admin owner or Manager |
+| POST | `/api/admin/billing-exceptions/:id/resolve` | Admin owner or Manager; Idempotency-Key |
 
 ## Validation
 
 ```bash
 npm test
+npm run lint
 npm run build
 ```
 
-The implemented API surface is:
+The test suite includes:
 
-- `GET /api/workspace?sessionId=...` — the signed-in teacher’s Melbourne-day sessions and one roster.
-- `POST /api/sessions/:sessionId/complete` — whole-roster finalisation; requires `Idempotency-Key`.
-- `POST /api/feedback/draft` — structured AI or deterministic fallback draft.
+- domain schemas, billing policy, fallback and Melbourne business date;
+- clean migration replay in in-memory SQLite;
+- frozen roster, completion claim, teacher/participant, ledger and enrollment constraints;
+- zero-credit exception and immutable-ledger checks.
 
-Useful destructive checks:
+Manual API checks additionally cover cross-teacher 403, exact replay, changed-payload conflict
+and the zero-credit exception result. See [TESTING.md](./TESTING.md) for the full matrix.
 
-1. POST the protected session `session_other_teacher_<today>` as Mei Lin; the API returns `403 SESSION_ACCESS_DENIED`.
-2. Replay the exact same completion with the same idempotency key; it returns the original result and does not charge again.
-3. Reuse that key with changed attendance; it returns `409 IDEMPOTENCY_KEY_REUSED`.
-4. Submit a non-roster student or omit a roster student; it returns 422 without partial writes.
-5. Leave `OPENAI_API_KEY` empty; feedback still returns a valid editable structure and attendance remains independent.
+## Architecture decisions
 
-## Architecture
-
-```text
-React client workspace
-  → authenticated route handlers
-  → domain services (authorisation, state, idempotency, billing policy)
-  → prepared D1 statements and transactional batch
-  → database CHECK / UNIQUE / trigger backstops
-```
-
-This is intentionally a modular monolith. The data volume does not justify microservices. Browser state is limited to the open class form; durable state stays in D1.
-
-Notable decisions:
-
-- `ClassSeries` and `LessonSession` are separate so one day can be cancelled or assigned to a substitute without rewriting the weekly class.
-- Lesson balance is derived from immutable `CreditTransaction` rows.
-- The server derives the actor from the authenticated request; it never accepts a role or teacher ID from the browser.
-- The class-completion hash is computed from a canonical payload. A matching retry is safe; a changed payload under the same key is rejected.
-- AI is outside the attendance transaction and cannot set status, permissions or charges.
+- A modular monolith is appropriate for roughly 1,000 students and 60 weekly classes.
+- `ClassSeries` is the recurring plan; `LessonSession` is a real occurrence.
+- `SessionParticipant` freezes the operational roster for history.
+- Attendance is the learning-service fact; CreditTransaction is the financial fact.
+- Credit balance is `SUM(immutable ledger)`, not a mutable field.
+- A database-triggered claim turns stale-version completion into a transactional SQL failure.
+- LLM output is untrusted text and never controls authorisation, attendance or charging.
 
 ## Known boundaries
 
-- The reference UI covers teachers; an admin queue for `pending_insufficient_credit` is designed but not implemented.
-- Completed attendance is intentionally read-only for teachers. A production admin correction flow would append reversal entries and audit events.
-- The local simulated account is seed-specific. Production membership should be provisioned explicitly rather than auto-claiming staff.
-- Session generation is demo-oriented and keeps an active synthetic class available on the current Melbourne date. A production scheduler would materialise instances from recurrence rules.
-- WebMCP registration is progressive enhancement; unsupported browsers use the normal UI.
+- The implemented UI is teacher-focused; the billing-exception resolution is API/domain complete
+  but does not yet have a full Admin console.
+- Feedback is one class-level family-update draft, not a per-student report.
+- Inquiry/trial CRM, schedule editing, payment processing, messaging and family portal are design-only.
+- The committed SQLite tests protect DB invariants; a production rollout should add remote D1
+  concurrency/E2E tests, monitoring and backup/restore rehearsal.
 
 ## AI-tool disclosure
 
-Codex was used to analyse the ambiguous brief, compare two viable slices, scaffold the UI, draft migrations, implement APIs and prepare tests/documentation. The implementation did **not** accept several tempting suggestions:
+I used Codex for requirement decomposition, alternative-slice comparison, initial scaffolding,
+schema/API/UI drafts, adversarial review, testing and documentation. I reviewed and changed the
+generated design rather than accepting it as authoritative.
 
-- It does not build the whole lifecycle or generic CRUD pages; the slice stays narrow.
-- It does not store a mutable `remainingCredits` field.
-- It does not add an AI chat box or let AI decide attendance and charging.
-- It does not block recording a real attendance fact when a balance is zero.
-- It does not introduce a global state store, microservices or a general workflow engine.
+Examples of rejected or corrected suggestions:
 
-Every generated choice should still be defended in the interview; this README and the design document state those choices explicitly.
+- broad lifecycle CRUD instead of one deep slice;
+- mutable `remainingCredits` instead of a ledger;
+- AI-controlled attendance or an AI chat box;
+- automatic family messaging;
+- microservices and a global client store at this scale;
+- runtime demo seeding;
+- defaulting every unmarked student to Present;
+- checking an optimistic lock only after a database batch had committed.
