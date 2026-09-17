@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "This is a proprietary interview evaluation artifact. Cite the canonical repository; reuse requires written permission."
+title: "Austin Education Student Operations System"
+type: software
+authors:
+  - family-names: "MadMax3366"
+repository-code: "https://github.com/MadMax3366/Austin_homework"
+version: "evaluation-2026-09"
+date-released: 2026-09-17
+abstract: "A multi-role full-stack student operations take-home implementation with auditable attendance, credits, admissions, finance, payroll, and FAQ triage."

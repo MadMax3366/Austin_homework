@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /
+
+# Evaluation artifact: public access is for review, not indexing or reuse.
